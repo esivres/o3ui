@@ -3,45 +3,6 @@
 Active issues and follow-ups, by priority. Items move out of here into
 git history when fixed.
 
-## Sprint 2 — следующий рывок (по UX-ревью)
-
-- [ ] **`.ovpn` parsing → list detail pane.** Parser живёт в
-      `internal/ovpnconf`, `Service.ImportFromFile` уже знает тело.
-      Распарсить на import, сложить host/proto/cipher/auth в overlay
-      (новые колонки), surface через `Service.GetOverlay`. После этого
-      правая панель в list перестаёт быть прочерками.
-- [ ] **Edit: вернуть tab-bar с реально работающими вкладками.** Не
-      возвращать пустые табы — только то, что несёт контент.
-      Минимум:
-      - **general** — имя (rename), country, favorite/auto-connect
-        тоггл-чекбоксы, parsed `.ovpn`-поля (host/proto/cipher) из
-        overlay. Консолидирует то что сейчас раскидано по
-        хоткеям `R / f / `,` `.
-      - **authentication** — текущий контент (creds + OTP).
-      - **raw .ovpn** — read-only viewport, `Service.configs.Fetch`
-        через bubbles/viewport. Полезно для debug-а конфига.
-      `network / advanced` — отложены до спринта 4+, пока не выяснили
-      какие per-config properties openvpn3 D-Bus реально отдаёт.
-- [ ] **Settings: about-таб.** Version (мы прокидываем `-X
-      main.version`/commit/date в ldflags), license, ссылка на
-      github. ~10 строк, мгновенный win. `connection/general/network`
-      пока пустые — не возвращать.
-- [ ] **Убрать прогресс-бар на connecting.** Сейчас `elapsedPct`
-      врёт юзеру: бар доезжает до 95% за 12с независимо от того что
-      делает openvpn3. Оставить только spinner + step-индикаторы
-      session/auth/tunnel — они честные.
-- [ ] **Удалить дублирующие inline OTP-modes из edit** (`m` manual,
-      `g` qr-path, modeEnterURI). Оставить только `i` → otpimport
-      screen. Удаляет ~80 строк фрагментированной логики.
-- [ ] **Modal auth поверх suspended screen**, а не fullscreen
-      replace. Сейчас фон auth-modal затирает connecting-экран
-      целиком — пользователь теряет контекст, кажется будто
-      приложение перезапустилось.
-- [ ] **Q vs q в list при активной сессии.** `q` мгновенно выходит
-      даже если есть active tunnel. Использовать новый
-      `components.ConfirmModal` для предупреждения, либо `Q` (Shift)
-      для quit, `q` — no-op в list.
-
 ## Sprint 3 — wow-фичи
 
 - [ ] **Live D-Bus log на Connecting screen.** Subscribe per-session
@@ -73,8 +34,6 @@ git history when fixed.
 - [ ] **Session history per profile** — ring buffer в overlay
       (последние 10 attempts: timestamp, duration, status, bytes).
       Показать в right pane как timeline.
-- [ ] **Delete profile из TUI** (`D` с confirm). Сейчас только
-      через `openvpn3 config-remove`.
 - [ ] **`0..9` quick-jump на list** — выпрыгнуть на строку N.
       `[N]` индексы уже отрисованы — намёк, который надо закрыть.
 - [ ] **Mouse-support** (`tea.WithMouseAllMotion`) — scroll,
@@ -111,3 +70,15 @@ git history when fixed.
 ## Done — moved into git history
 
 Items finalised (and removed from this list) live in git history.
+Recent closures:
+
+- Sprint 1 — UX foundation: confirm primitive, per-screen HelpKeys,
+  cursor preservation on reload, drop decorative tab-sidebars,
+  Esc-in-filter keeps the filter, dead `s` action gone.
+- Sprint 2 — content delivery: .ovpn parser → list detail pane,
+  edit-screen tabs (general / auth / raw .ovpn) with proper
+  left sidebar, settings tabs (backend / about) with version
+  stamps from buildinfo, drop fake connecting progress-bar,
+  remove duplicate inline OTP modes, custom filepicker with
+  extension cycle + substring search, layered auth modal,
+  delete profile (D), Q vs q quit-confirm on active tunnel.

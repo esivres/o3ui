@@ -59,7 +59,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v6
+      # Pin the action and golangci-lint to v2.x — our .golangci.yml uses
+      # the v2 schema (`version: "2"`), and the action's `latest` tag still
+      # resolves to v1.64 which can't read it and doesn't know Go 1.26.
+      - uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.1.6
           args: --timeout=5m

@@ -96,6 +96,7 @@ func (m *Model) HelpKeys() []components.KeyHelp {
 		{Key: "i", Label: "import .ovpn or .o3ui.json"},
 		{Key: "X", Label: "export profile → JSON (confirm)"},
 		{Key: "R", Label: "rename profile"},
+		{Key: "D", Label: "delete profile (confirm)"},
 		{Key: ",", Label: "settings"},
 		{Key: "r", Label: "reload"},
 	}
@@ -323,6 +324,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.renameDraft = it.Name
 				m.renamingPath = it.ConfigPath
 			}
+		case "D":
+			// Shift-D — destructive, hence the capital. Lowercase d is
+			// the disconnect verb; pairing rename / delete on R / D
+			// keeps "edit the row" affordances in one fingering.
+			return m, m.emitCmd("delete")
 		// `s` (stats) was a dead key — Root had no handler. Removed
 		// rather than wired to something speculative; we'll add it
 		// back when there's a real stats screen to point at.

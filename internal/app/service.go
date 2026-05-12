@@ -502,3 +502,29 @@ func (s *Service) RenameConfig(configPath, newName string) error {
 	}
 	return s.configs.Rename(configPath, trimmed)
 }
+
+// RemoveConfig deletes the profile from openvpn3 and cascades the
+// cleanup: the overlay row (favorite/country/timestamps) goes, and
+// any keyring entries for stored password + TOTP secret are dropped.
+// Best-effort on the secondary cleanup — the openvpn3 removal is the
+// source-of-truth deletion; orphan keyring/overlay rows are harmless
+// and the next list refresh would never reference them anyway.
+func (s *Service) RemoveConfig(configPath string) error {
+	if err := s.configs.Remove(configPath); err != nil {
+		return err
+	}
+	if s.overlay != nil {
+		if o, err := s.overlay.Get(configPath); err == nil {
+			if s.secrets != nil {
+				if o.OTPSecretID != "" {
+					_ = s.secrets.Delete(o.OTPSecretID)
+				}
+				if o.PasswordSecretID != "" {
+					_ = s.secrets.Delete(o.PasswordSecretID)
+				}
+			}
+		}
+		_ = s.overlay.Delete(configPath)
+	}
+	return nil
+}

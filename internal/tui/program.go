@@ -221,6 +221,24 @@ func (m *Root) handleListAction(a list.ActionMsg) (tea.Model, tea.Cmd) {
 		next.SetSize(m.width, m.height)
 		m.current = next
 		return m, next.Init()
+	case "delete":
+		cfgPath := a.Item.ConfigPath
+		name := a.Item.Name
+		m.pendingConfirm = &confirmRequest{
+			modal: components.ConfirmModal{
+				Title:    "Delete profile " + name + "?",
+				Body:     "Removes the profile from openvpn3 and clears saved username / password / TOTP secret. The .ovpn file you imported from is not touched.",
+				YesLabel: "Delete",
+				Danger:   true,
+			},
+			onYes: func() tea.Msg {
+				if err := m.svc.RemoveConfig(cfgPath); err != nil {
+					return list.FlashMsg{Text: "delete failed: " + err.Error(), IsError: true}
+				}
+				return list.FlashMsg{Text: "✗ deleted · " + name}
+			},
+		}
+		return m, nil
 	case "export":
 		// Export writes the user's TOTP secret and password in
 		// plaintext to a file. The y/N gate makes that consequence

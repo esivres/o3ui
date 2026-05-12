@@ -127,51 +127,57 @@ func (m *Model) View() string {
 		m.width,
 	)
 
-	tabbar := m.renderTabBar()
+	const sidebarW = 22
+	sidebar := m.renderSidebar(sidebarW)
+	contentW := m.width - sidebarW - 2
 	var body string
 	switch m.tab {
 	case tabBackend:
-		body = m.renderRight()
+		body = m.renderRight(contentW)
 	case tabAbout:
-		body = m.renderAbout()
+		body = m.renderAbout(contentW)
 	}
-	// No outer Width wrap — inner Boxes already render at the full
-	// width (their `Width` is the content area, plus 4 for chrome).
-	// Forcing width here would re-wrap and cut bordered rows.
+	inner := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, "  ", body)
 	help := components.HelpBar([]components.KeyHelp{
 		{Key: "1-6", Label: "log level"},
 		{Key: "r", Label: "refresh"},
 		{Key: "q/esc", Label: "back"},
 	}, m.width)
-	return lipgloss.JoinVertical(lipgloss.Left, header, tabbar, "", body, "", help)
+	return lipgloss.JoinVertical(lipgloss.Left, header, "", inner, "", help)
 }
 
-// renderTabBar mirrors the edit-screen tab strip — active pill in
-// brand pink, inactive in panel grey.
-func (m *Model) renderTabBar() string {
+// renderSidebar — vertical 2-entry tab list, same shape as edit's.
+func (m *Model) renderSidebar(w int) string {
 	tabs := []struct {
 		idx   tab
+		key   string
 		label string
 	}{
-		{tabBackend, "1 backend"},
-		{tabAbout, "2 about"},
+		{tabBackend, "1", "backend"},
+		{tabAbout, "2", "about"},
 	}
-	pieces := make([]string, 0, len(tabs))
+	var rows []string
 	for _, t := range tabs {
-		fg, bg := theme.FgDim, theme.Panel2
+		row := "  " + theme.Subtle.Render(t.key+" ") + theme.Dim.Render(t.label)
 		if t.idx == m.tab {
-			fg, bg = theme.Bg, theme.Pink
+			row = theme.AccentPink.Render("▎") + " " +
+				theme.Subtle.Render(t.key+" ") +
+				theme.Bright.Render(t.label)
 		}
-		pieces = append(pieces, components.Pill(t.label, fg, bg))
+		rows = append(rows, row)
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, pieces...)
+	return components.Box{
+		Content:     strings.Join(rows, "\n"),
+		Width:       w - 4,
+		BorderColor: theme.BorderLt,
+	}.Render()
 }
 
 // renderAbout shows release stamps goreleaser injected into the
 // buildinfo package, plus the Go runtime info — same data a user
 // would otherwise have to grep out of `o3ui --version` (which we
 // don't ship yet) or read from package metadata.
-func (m *Model) renderAbout() string {
+func (m *Model) renderAbout(w int) string {
 	rows := []string{
 		kv("version", versionPill()),
 		kv("commit", or(buildinfo.Commit, theme.Subtle.Render("—"))),
@@ -185,7 +191,7 @@ func (m *Model) renderAbout() string {
 	return components.Box{
 		Title:       theme.AccentPink.Render("◆ ") + "about",
 		Content:     strings.Join(rows, "\n"),
-		Width:       m.width - 4,
+		Width:       w - 4,
 		BorderColor: theme.BorderLt,
 	}.Render()
 }
@@ -211,7 +217,7 @@ func kv(k, v string) string {
 	return lipgloss.NewStyle().Foreground(theme.FgDim).Width(10).Render(k) + " " + v
 }
 
-func (m *Model) renderRight() string {
+func (m *Model) renderRight(_ int) string {
 	parts := []string{
 		m.renderServices(),
 		"",
@@ -230,14 +236,14 @@ func (m *Model) renderServices() string {
 		return components.Box{
 			Title:   theme.AccentCyan.Render("🔌 ") + "backend services",
 			Content: theme.AccentRed.Render("error: " + m.loadErr.Error()),
-			Width:   m.width - 28,
+			Width:   m.width - 28 - 22,
 		}.Render()
 	}
 	if len(m.services) == 0 {
 		return components.Box{
 			Title:   theme.AccentCyan.Render("🔌 ") + "backend services",
 			Content: theme.Dim.Render("no openvpn3 services discovered"),
-			Width:   m.width - 28,
+			Width:   m.width - 28 - 22,
 		}.Render()
 	}
 
@@ -277,7 +283,7 @@ func (m *Model) renderServices() string {
 	return components.Box{
 		Title:   theme.AccentCyan.Render("🔌 ") + "backend services",
 		Content: strings.Join(rows, "\n"),
-		Width:   m.width - 28,
+		Width:   m.width - 28 - 22,
 	}.Render()
 }
 
@@ -298,7 +304,7 @@ func (m *Model) renderVerbosity() string {
 	return components.Box{
 		Title:   theme.AccentPurple.Render("▤ ") + "log verbosity",
 		Content: strings.Join(pills, " ") + "\n\n" + theme.Subtle.Render("press 1..6 to change"),
-		Width:   m.width - 28,
+		Width:   m.width - 28 - 22,
 	}.Render()
 }
 
@@ -317,7 +323,7 @@ func (m *Model) renderBusPaths() string {
 	return components.Box{
 		Title:   theme.AccentMint.Render("📂 ") + "bus paths " + theme.Dim.Render("· read-only"),
 		Content: strings.Join(rows, "\n"),
-		Width:   m.width - 28,
+		Width:   m.width - 28 - 22,
 	}.Render()
 }
 

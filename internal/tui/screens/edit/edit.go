@@ -419,54 +419,63 @@ func (m *Model) View() string {
 		[]string{components.Pill(shortPath(m.cfgPath), theme.FgDim, theme.Panel2)},
 		m.width,
 	)
-	tabbar := m.renderTabBar()
+	const sidebarW = 22
+	sidebar := m.renderSidebar(sidebarW)
+	contentW := m.width - sidebarW - 2 // 2 spaces gap between
 	var body string
 	switch m.tab {
 	case tabGeneral:
-		body = m.renderGeneralTab()
+		body = m.renderGeneralTab(contentW)
 	case tabAuth:
-		body = m.renderAuthTab()
+		body = m.renderAuthTab(contentW)
 	case tabRaw:
-		body = m.renderRawTab()
+		body = m.renderRawTab(contentW)
 	}
-	// Don't wrap in a fixed-width style — inner Boxes already render
-	// at exactly m.width (their Width field is content area, +2 border
-	// +2 padding = +4 total). Forcing width again would chop bordered
-	// rows that are now wider than the outer wrap.
 	if flash := m.renderFlash(); flash != "" {
 		body = body + "\n\n" + flash
 	}
+	inner := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, "  ", body)
 	help := components.HelpBar(m.helpKeys(), m.width)
-	return lipgloss.JoinVertical(lipgloss.Left, header, tabbar, "", body, "", help)
+	return lipgloss.JoinVertical(lipgloss.Left, header, "", inner, "", help)
 }
 
-// renderTabBar shows 1/2/3 tab pills. Active one uses the accent fill,
-// inactive ones the muted panel background — same idiom as the desklet
-// tab strip.
-func (m *Model) renderTabBar() string {
+// renderSidebar lists the three real tabs vertically — pink accent bar
+// and bright text on the active one, muted on the rest. Matches the
+// old decorative sidebar's shape, only with entries that actually do
+// something.
+func (m *Model) renderSidebar(w int) string {
 	tabs := []struct {
 		idx   tab
+		key   string
 		label string
 	}{
-		{tabGeneral, "1 general"},
-		{tabAuth, "2 authentication"},
-		{tabRaw, "3 raw .ovpn"},
+		{tabGeneral, "1", "general"},
+		{tabAuth, "2", "authentication"},
+		{tabRaw, "3", "raw .ovpn"},
 	}
-	pieces := make([]string, 0, len(tabs))
+	var rows []string
 	for _, t := range tabs {
-		fg, bg := theme.FgDim, theme.Panel2
+		row := "  " +
+			theme.Subtle.Render(t.key+" ") +
+			theme.Dim.Render(t.label)
 		if t.idx == m.tab {
-			fg, bg = theme.Bg, theme.Pink
+			row = theme.AccentPink.Render("▎") + " " +
+				theme.Subtle.Render(t.key+" ") +
+				theme.Bright.Render(t.label)
 		}
-		pieces = append(pieces, components.Pill(t.label, fg, bg))
+		rows = append(rows, row)
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, pieces...)
+	return components.Box{
+		Content:     strings.Join(rows, "\n"),
+		Width:       w - 4, // Box adds 4 (border + padding)
+		BorderColor: theme.BorderLt,
+	}.Render()
 }
 
 // renderGeneralTab: a row of kv pairs (parsed .ovpn summary + overlay
 // flags). All read-only except for `f`/`a`/`c` actions, which mutate
 // in place and flash the result.
-func (m *Model) renderGeneralTab() string {
+func (m *Model) renderGeneralTab(w int) string {
 	// Inline country editor lives in the same area as the value, like
 	// the credential editors do on the auth tab — feels consistent.
 	if m.mode == modeEnterCountry {
@@ -521,7 +530,7 @@ func (m *Model) renderGeneralTab() string {
 			kv("cipher", cipher),
 			kv("auth", authStr),
 		}, "\n"),
-		Width:       m.width - 4,
+		Width:       w - 4,
 		BorderColor: theme.BorderLt,
 	}.Render()
 
@@ -533,7 +542,7 @@ func (m *Model) renderGeneralTab() string {
 			kv("favorite", boolToggle(fav)) + "  " + theme.Subtle.Render("[f toggle]"),
 			kv("auto", boolToggle(auto)) + "  " + theme.Subtle.Render("[a toggle]"),
 		}, "\n"),
-		Width:       m.width - 4,
+		Width:       w - 4,
 		BorderColor: theme.Pink,
 	}.Render()
 
@@ -541,22 +550,28 @@ func (m *Model) renderGeneralTab() string {
 }
 
 // renderAuthTab — the original credentials + TOTP layout.
-func (m *Model) renderAuthTab() string {
-	creds := m.renderCreds()
-	totp := m.renderTOTP()
+func (m *Model) renderAuthTab(w int) string {
+	creds := m.renderCreds(w)
+	totp := m.renderTOTP(w)
 	return creds + "\n" + totp
 }
 
 // renderRawTab — viewport over the .ovpn body. Errors are surfaced
 // as a one-line message instead of an empty box.
-func (m *Model) renderRawTab() string {
+func (m *Model) renderRawTab(w int) string {
 	if m.rawErr != "" {
 		return theme.AccentRed.Render("fetch failed: " + m.rawErr)
+	}
+	// Resize the viewport to the actual content area we got — the
+	// SetSize hook only knows the screen width, not how much the
+	// sidebar took.
+	if m.raw.Width != w-4 {
+		m.raw.Width = w - 4
 	}
 	return components.Box{
 		Title:       theme.AccentCyan.Render("◆ ") + "raw .ovpn (read-only)",
 		Content:     m.raw.View(),
-		Width:       m.width - 4,
+		Width:       w - 4,
 		BorderColor: theme.BorderLt,
 	}.Render()
 }
@@ -568,7 +583,7 @@ func boolToggle(b bool) string {
 	return theme.Subtle.Render("off")
 }
 
-func (m *Model) renderCreds() string {
+func (m *Model) renderCreds(w int) string {
 	user, _, hasPwd := m.svc.GetCredentials(m.cfgPath)
 	userText := theme.Subtle.Render("—")
 	if user != "" {
@@ -598,11 +613,11 @@ func (m *Model) renderCreds() string {
 	return components.Box{
 		Title:   theme.AccentCyan.Render("◆ ") + "credentials",
 		Content: content,
-		Width:   m.width - 28,
+		Width:   w - 4,
 	}.Render()
 }
 
-func (m *Model) renderTOTP() string {
+func (m *Model) renderTOTP(w int) string {
 	var content string
 	switch m.mode {
 	case modeRemoveOTPConfirm:
@@ -618,7 +633,7 @@ func (m *Model) renderTOTP() string {
 	return components.Box{
 		Title:       theme.AccentPink.Render("🔑 ") + "two-factor (TOTP)",
 		Content:     content,
-		Width:       m.width - 28,
+		Width:       w - 4,
 		BorderColor: theme.Pink,
 		Glow:        true,
 	}.Render()
@@ -666,7 +681,7 @@ func (m *Model) renderInputForm(label, hint string) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(theme.Pink).
 		Padding(0, 1).
-		Width(m.width - 38).
+		Width(m.width - 32).
 		Render(m.input.View())
 
 	return strings.Join([]string{
@@ -689,22 +704,49 @@ func (m *Model) renderFlash() string {
 	return ""
 }
 
+// helpKeys returns the footer keymap for the *current tab and mode*.
+// Mixing keys across tabs was the bug that prompted the rewrite:
+// general tab showed `u username · p password` even though those
+// keys do nothing while on it.
 func (m *Model) helpKeys() []components.KeyHelp {
-	switch m.mode {
-	case modeView:
-		base := []components.KeyHelp{
-			{Key: "u", Label: "username"}, {Key: "p", Label: "password"}, {Key: "d", Label: "clear creds"},
-			{Key: "i", Label: "import OTP"},
-		}
-		if m.svc.HasOTP(m.cfgPath) {
-			base = append(base, components.KeyHelp{Key: "x", Label: "remove OTP"})
-		}
-		return append(base, components.KeyHelp{Key: "q/esc", Label: "back"})
-	case modeRemoveOTPConfirm:
+	if m.mode == modeRemoveOTPConfirm {
 		return []components.KeyHelp{{Key: "y", Label: "remove"}, {Key: "n", Label: "keep"}}
-	default:
+	}
+	if m.mode != modeView {
 		return []components.KeyHelp{{Key: "enter", Label: "save"}, {Key: "esc", Label: "cancel"}}
 	}
+	common := []components.KeyHelp{
+		{Key: "1-3", Label: "tab"},
+	}
+	switch m.tab {
+	case tabGeneral:
+		return append(common,
+			components.KeyHelp{Key: "f", Label: "favorite"},
+			components.KeyHelp{Key: "a", Label: "auto"},
+			components.KeyHelp{Key: "c", Label: "country"},
+			components.KeyHelp{Key: "q/esc", Label: "back"},
+		)
+	case tabAuth:
+		rows := make([]components.KeyHelp, 0, 8)
+		rows = append(rows, common...)
+		rows = append(rows,
+			components.KeyHelp{Key: "u", Label: "username"},
+			components.KeyHelp{Key: "p", Label: "password"},
+			components.KeyHelp{Key: "d", Label: "clear creds"},
+			components.KeyHelp{Key: "i", Label: "import OTP"},
+		)
+		if m.svc.HasOTP(m.cfgPath) {
+			rows = append(rows, components.KeyHelp{Key: "x", Label: "remove OTP"})
+		}
+		rows = append(rows, components.KeyHelp{Key: "q/esc", Label: "back"})
+		return rows
+	case tabRaw:
+		return append(common,
+			components.KeyHelp{Key: "↑↓", Label: "scroll"},
+			components.KeyHelp{Key: "q/esc", Label: "back"},
+		)
+	}
+	return common
 }
 
 func kv(k, v string) string {

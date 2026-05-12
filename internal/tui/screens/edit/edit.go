@@ -429,7 +429,10 @@ func (m *Model) View() string {
 	case tabRaw:
 		body = m.renderRawTab()
 	}
-	body = lipgloss.NewStyle().Width(m.width - 4).Render(body)
+	// Don't wrap in a fixed-width style — inner Boxes already render
+	// at exactly m.width (their Width field is content area, +2 border
+	// +2 padding = +4 total). Forcing width again would chop bordered
+	// rows that are now wider than the outer wrap.
 	if flash := m.renderFlash(); flash != "" {
 		body = body + "\n\n" + flash
 	}

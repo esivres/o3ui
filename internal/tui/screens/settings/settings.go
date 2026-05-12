@@ -135,7 +135,9 @@ func (m *Model) View() string {
 	case tabAbout:
 		body = m.renderAbout()
 	}
-	body = lipgloss.NewStyle().Width(m.width - 4).Render(body)
+	// No outer Width wrap — inner Boxes already render at the full
+	// width (their `Width` is the content area, plus 4 for chrome).
+	// Forcing width here would re-wrap and cut bordered rows.
 	help := components.HelpBar([]components.KeyHelp{
 		{Key: "1-6", Label: "log level"},
 		{Key: "r", Label: "refresh"},

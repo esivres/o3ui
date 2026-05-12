@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/makiuchi-d/gozxing v0.1.1
+	github.com/sahilm/fuzzy v0.1.2
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/stretchr/testify v1.11.1
 	github.com/zalando/go-keyring v0.2.8

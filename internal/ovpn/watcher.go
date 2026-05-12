@@ -44,6 +44,16 @@ type AttentionRequiredEvent struct {
 	Message string
 }
 
+// SessionLogEvent fires for each Log signal openvpn3 emits on a session
+// after LogForward(true). Group and Level are openvpn3's raw enum codes;
+// the UI maps them to colours and severity labels.
+type SessionLogEvent struct {
+	Path    string
+	Group   uint32
+	Level   uint32
+	Message string
+}
+
 // ConfigCreatedEvent fires when a configuration is imported (UI may not
 // be the importer — someone using `openvpn3 config-import` triggers it
 // too, and we want to reflect that immediately).
@@ -56,6 +66,7 @@ func (SessionCreatedEvent) event()    {}
 func (SessionDestroyedEvent) event()  {}
 func (StatusChangeEvent) event()      {}
 func (AttentionRequiredEvent) event() {}
+func (SessionLogEvent) event()        {}
 func (ConfigCreatedEvent) event()     {}
 func (ConfigDestroyedEvent) event()   {}
 
@@ -160,6 +171,13 @@ func matchSpecs() []struct {
 		},
 		{
 			[]dbus.MatchOption{
+				dbus.WithMatchInterface(IfaceSession),
+				dbus.WithMatchMember("Log"),
+			},
+			"Log",
+		},
+		{
+			[]dbus.MatchOption{
 				dbus.WithMatchInterface(IfaceConfigurationMgr),
 				dbus.WithMatchMember("ConfigurationManagerEvent"),
 			},
@@ -217,6 +235,19 @@ func translate(sig *dbus.Signal) Event {
 		return StatusChangeEvent{
 			Path:   string(sig.Path),
 			Status: Status{Major: major, Minor: minor, Message: msg},
+		}
+	case IfaceSession + ".Log":
+		// body: (u group, u level, s message) — openvpn3 Log signal.
+		// LogForward(true) on the session controller must have been
+		// called for these to arrive on our connection.
+		if len(sig.Body) < 3 {
+			return nil
+		}
+		group, _ := sig.Body[0].(uint32)
+		level, _ := sig.Body[1].(uint32)
+		msg, _ := sig.Body[2].(string)
+		return SessionLogEvent{
+			Path: string(sig.Path), Group: group, Level: level, Message: msg,
 		}
 	case IfaceSession + ".AttentionRequired":
 		// body: (u code_major, u code_minor, s message)

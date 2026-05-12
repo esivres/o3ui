@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -62,6 +63,12 @@ type Root struct {
 	// Until the user picks, all key input (except y/n/esc) is
 	// swallowed; on `y` the saved Cmd fires.
 	pendingConfirm *confirmRequest
+
+	// palette is the floating fuzzy command launcher. Non-nil while
+	// open; owns the key stream like authActive does, but renders
+	// centred without dimming the base screen (the user wants to keep
+	// reading where they were).
+	palette *components.Palette
 }
 
 // confirmRequest captures the text shown in the modal plus the Cmd to
@@ -113,6 +120,36 @@ func (m *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		// Open the command palette on `:` / Ctrl+P. Disabled while any
+		// modal is up so the trigger keys don't escape the modal's
+		// own text input.
+		if m.palette == nil && !m.isModalActive() {
+			switch msg.String() {
+			case ":", "ctrl+p":
+				m.openPalette()
+				return m, textinput.Blink
+			}
+		}
+	}
+
+	// Palette owns the entire key stream while open. Non-key messages
+	// (timers, signal events) still flow to current so the screen
+	// behind keeps ticking.
+	if m.palette != nil {
+		if _, isKey := msg.(tea.KeyMsg); isKey {
+			updated, cmd := m.palette.Update(msg)
+			m.palette = updated
+			return m, cmd
+		}
+	}
+
+	switch msg := msg.(type) {
+	case components.PalettePickMsg:
+		m.palette = nil
+		return m, msg.Run
+	case components.PaletteCancelMsg:
+		m.palette = nil
+		return m, nil
 	}
 
 	// Transition messages — checked before forwarding so the originating
@@ -129,7 +166,25 @@ func (m *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.gotoList()
 	case connected.DisconnectedMsg, connected.BackMsg:
 		return m.gotoList()
+	case connected.OpenEditMsg:
+		// Edit while the tunnel is live: stash Connected as the
+		// "suspended" screen and switch to edit. When the user hits
+		// q/esc in edit, we return to Connected rather than dropping
+		// to list — the live session was their working context.
+		next := edit.New(m.svc, msg.ConfigPath, msg.ConfigName)
+		next.SetSize(m.width, m.height)
+		m.suspended = m.current
+		m.current = next
+		return m, next.Init()
 	case edit.BackMsg:
+		// If edit was entered from Connected (live tunnel), bounce
+		// back there so the user keeps their working context instead
+		// of being dumped to the list.
+		if m.suspended != nil {
+			m.current = m.suspended
+			m.suspended = nil
+			return m, m.current.Init()
+		}
 		return m.gotoList()
 	case edit.OpenOTPImportMsg:
 		next := otpimport.New(m.svc, msg.ConfigPath, msg.ConfigName)
@@ -478,10 +533,95 @@ func (m *Root) View() string {
 		}
 		return topStrip + "\n" + centered
 	}
+	if m.palette != nil {
+		card := m.palette.View()
+		if m.width == 0 || m.height == 0 {
+			return card
+		}
+		// Show the base behind so the user keeps context — no top-strip
+		// trick like the auth modal because the palette is short and
+		// the user's current screen state matters even less than during
+		// auth (they're picking a destination, not answering a prompt).
+		return lipgloss.Place(m.width, m.height,
+			lipgloss.Center, lipgloss.Center, card)
+	}
 	if !m.helpOverlay {
 		return base
 	}
 	return m.renderHelpOverlay(base)
+}
+
+// openPalette assembles the list of commands surfaced when the user
+// hits `:` / Ctrl+P and stores a fresh Palette on the Root. Items are
+// rebuilt every open so newly imported profiles / fresh sessions show
+// up immediately without a separate refresh path.
+func (m *Root) openPalette() {
+	items := m.buildPaletteItems()
+	p := components.NewPalette(items)
+	p.SetSize(m.width, m.height)
+	m.palette = p
+}
+
+// buildPaletteItems enumerates every command reachable from the
+// keyboard so the user has one searchable surface. Profile-bound
+// commands (connect / edit / delete) appear per profile; session-bound
+// disconnects appear only when there's actually something to
+// disconnect. Globals come last so they win ties on identical prefixes
+// only after the more specific entries.
+func (m *Root) buildPaletteItems() []components.PaletteItem {
+	var items []components.PaletteItem
+
+	configs, _ := m.svc.ListConfigs()
+	active := map[string]string{} // configPath → sessionPath
+	if sessions, err := m.svc.ActiveSessions(); err == nil {
+		for i := range sessions {
+			active[sessions[i].ConfigPath] = sessions[i].Path
+		}
+	}
+	for _, c := range configs {
+		c := c
+		item := list.Item{ConfigPath: c.Path, Name: c.Name}
+		items = append(items, components.PaletteItem{
+			Title:  "connect " + c.Name,
+			Detail: "profile",
+			Run:    actionCmd("connect", item),
+		})
+		if sessPath, ok := active[c.Path]; ok {
+			sp := sessPath
+			items = append(items, components.PaletteItem{
+				Title:  "disconnect " + c.Name,
+				Detail: "session",
+				Run: func() tea.Msg {
+					_ = m.svc.Disconnect(sp)
+					return list.FlashMsg{Text: "● disconnected · " + c.Name}
+				},
+			})
+		}
+		items = append(items, components.PaletteItem{
+			Title:  "edit " + c.Name,
+			Detail: "profile",
+			Run:    actionCmd("edit", item),
+		})
+		items = append(items, components.PaletteItem{
+			Title:  "delete " + c.Name,
+			Detail: "profile",
+			Run:    actionCmd("delete", item),
+		})
+	}
+	items = append(items,
+		components.PaletteItem{Title: "import profile", Detail: "global",
+			Run: actionCmd("import", list.Item{})},
+		components.PaletteItem{Title: "settings", Detail: "global",
+			Run: actionCmd("settings", list.Item{})},
+		components.PaletteItem{Title: "quit", Detail: "global", Run: tea.Quit},
+	)
+	return items
+}
+
+// actionCmd packages an ActionMsg as a tea.Cmd so the palette can fire
+// the same routing path the list screen uses.
+func actionCmd(kind string, it list.Item) tea.Cmd {
+	return func() tea.Msg { return list.ActionMsg{Kind: kind, Item: it} }
 }
 
 // isModalActive reports whether something is overlaid on top of the
@@ -489,7 +629,7 @@ func (m *Root) View() string {
 // free-text field must accept `?` as input rather than triggering
 // the global help, and otpimport has its own filter input).
 func (m *Root) isModalActive() bool {
-	if m.authActive != nil || m.pendingConfirm != nil {
+	if m.authActive != nil || m.pendingConfirm != nil || m.palette != nil {
 		return true
 	}
 	if _, ok := m.current.(*otpimport.Model); ok {

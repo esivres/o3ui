@@ -22,6 +22,14 @@ type fakeBackend struct {
 }
 
 func (f *fakeBackend) List() ([]ovpn.Session, error) { return f.sessions, nil }
+func (f *fakeBackend) Get(path string) (ovpn.Session, error) {
+	for i := range f.sessions {
+		if f.sessions[i].Path == path {
+			return f.sessions[i], nil
+		}
+	}
+	return ovpn.Session{}, errors.New("not found")
+}
 func (f *fakeBackend) NewTunnel(string) (string, error) {
 	return "", errors.New("unused")
 }
@@ -43,6 +51,7 @@ func (c *fakeBackendCtl) PendingInputs() ([]ovpn.InputPrompt, error) {
 func (c *fakeBackendCtl) ProvideInput(ovpn.InputPrompt, string) error { return nil }
 func (c *fakeBackendCtl) LogVerbosity() (uint32, error)               { return 0, nil }
 func (c *fakeBackendCtl) SetLogVerbosity(uint32) error                { return nil }
+func (c *fakeBackendCtl) LogForward(bool) error                       { return nil }
 func (c *fakeBackendCtl) Statistics() (map[string]int64, error) {
 	series := c.parent.scripts[c.path]
 	if len(series) == 0 {
@@ -185,10 +194,18 @@ func (f *fakeConfigs) Import(string, string, bool) (string, error) {
 func (f *fakeConfigs) Remove(string) error          { return errors.New("unused") }
 func (f *fakeConfigs) Fetch(string) (string, error) { return "", errors.New("unused") }
 func (f *fakeConfigs) Rename(string, string) error  { return errors.New("unused") }
+func (f *fakeConfigs) FetchProperties(string) (ovpn.ConfigProperties, error) {
+	return ovpn.ConfigProperties{}, nil
+}
+func (f *fakeConfigs) SetBoolProperty(string, string, bool) error { return nil }
+func (f *fakeConfigs) Overrides(string) ([]ovpn.Override, error)  { return nil, nil }
+func (f *fakeConfigs) SetOverride(string, string, string) error   { return nil }
+func (f *fakeConfigs) UnsetOverride(string, string) error         { return nil }
 
 type fakeSessions struct{ ctl *fakeCtl }
 
 func (f *fakeSessions) List() ([]ovpn.Session, error)    { return nil, nil }
+func (f *fakeSessions) Get(string) (ovpn.Session, error)  { return ovpn.Session{}, nil }
 func (f *fakeSessions) NewTunnel(string) (string, error) { return "", errors.New("unused") }
 func (f *fakeSessions) Control(string) SessionControl    { return f.ctl }
 
@@ -204,3 +221,4 @@ func (c *fakeCtl) ProvideInput(ovpn.InputPrompt, string) error { return nil }
 func (c *fakeCtl) Statistics() (map[string]int64, error)       { return nil, nil }
 func (c *fakeCtl) LogVerbosity() (uint32, error)               { return 0, nil }
 func (c *fakeCtl) SetLogVerbosity(uint32) error                { return nil }
+func (c *fakeCtl) LogForward(bool) error                       { return nil }

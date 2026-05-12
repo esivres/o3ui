@@ -25,6 +25,13 @@ func (a sessionAdapter) Control(path string) openapp.SessionControl {
 	return a.SessionManager.Control(path)
 }
 
+// Get exposes ovpn.SessionManager.Get on the openapp.SessionBackend
+// interface. The event-driven history recorder needs to look up a
+// session's config_path immediately after SessionCreatedEvent.
+func (a sessionAdapter) Get(path string) (ovpn.Session, error) {
+	return a.SessionManager.Get(path)
+}
+
 func main() {
 	// CLI dispatch first: subcommands return early without touching
 	// the TUI scaffolding. Anything else falls through to run().
@@ -73,6 +80,26 @@ func run() error {
 		openapp.NewPromptAuth(prompter),
 	}})
 
+	// History reconciliation at TUI startup:
+	//   1. Sweep open rows whose session_path is not live (orphaned
+	//      writes from previous runs that missed the destroy event).
+	//   2. Make sure every currently live session has an open row —
+	//      it may have been started by the desklet CLI or external
+	//      tooling before the TUI launched.
+	// Together these guarantee history reflects current bus state on
+	// the very first render. TUI-only — short-lived CLI invocations
+	// must not run any of this, otherwise they'd race their own
+	// pending writes (e.g. `o3ui disconnect` would flip its own live
+	// row to "lost" before it ran).
+	if sessions, err := svc.ListSessions(); err == nil {
+		live := make([]string, 0, len(sessions))
+		for i := range sessions {
+			live = append(live, sessions[i].Path)
+		}
+		_, _ = ov.SweepDanglingHistory(live)
+	}
+	svc.ReconcileLiveSessions()
+
 	// Background sampler for live throughput charts on the Connected
 	// screen. One per process is enough; iterates active sessions on
 	// each tick.
@@ -93,6 +120,11 @@ func run() error {
 	events := make(chan interface{}, 64)
 	go func() {
 		for ev := range watcher.Events() {
+			// Fan out: Service finalises non-UI state (history rows
+			// closed when a session dies without a user-initiated
+			// Disconnect); the bubbletea program still gets every
+			// event for screen routing.
+			svc.HandleEvent(ev)
 			events <- ev
 		}
 		close(events)

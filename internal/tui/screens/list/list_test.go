@@ -23,10 +23,25 @@ func (s *stubBackend) Import(string, string, bool) (string, error) {
 func (s *stubBackend) Remove(string) error          { return nil }
 func (s *stubBackend) Fetch(string) (string, error) { return "", nil }
 func (s *stubBackend) Rename(string, string) error  { return nil }
+func (s *stubBackend) FetchProperties(string) (ovpn.ConfigProperties, error) {
+	return ovpn.ConfigProperties{}, nil
+}
+func (s *stubBackend) SetBoolProperty(string, string, bool) error { return nil }
+func (s *stubBackend) Overrides(string) ([]ovpn.Override, error)  { return nil, nil }
+func (s *stubBackend) SetOverride(string, string, string) error   { return nil }
+func (s *stubBackend) UnsetOverride(string, string) error         { return nil }
 
 type stubSessions struct{ list []ovpn.Session }
 
 func (s *stubSessions) List() ([]ovpn.Session, error) { return s.list, nil }
+func (s *stubSessions) Get(p string) (ovpn.Session, error) {
+	for i := range s.list {
+		if s.list[i].Path == p {
+			return s.list[i], nil
+		}
+	}
+	return ovpn.Session{}, nil
+}
 func (s *stubSessions) NewTunnel(string) (string, error) {
 	return "", nil
 }
@@ -42,6 +57,7 @@ func (stubCtl) ProvideInput(ovpn.InputPrompt, string) error { return nil }
 func (stubCtl) Statistics() (map[string]int64, error)       { return nil, nil }
 func (stubCtl) LogVerbosity() (uint32, error)               { return 0, nil }
 func (stubCtl) SetLogVerbosity(uint32) error                { return nil }
+func (stubCtl) LogForward(bool) error                       { return nil }
 
 func newModel(t *testing.T, configs []ovpn.Config, active []ovpn.Session) *Model {
 	t.Helper()

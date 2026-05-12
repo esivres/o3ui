@@ -13,6 +13,7 @@
 package edit
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -53,6 +54,9 @@ const (
 	modeEnterPassword
 	modeEnterCountry
 	modeRemoveOTPConfirm
+	modeEnterServerOverride
+	modeEnterPortOverride
+	modeEnterProtoOverride
 )
 
 // The OTP-specific inline modes (paste URI / type base32 / pick QR
@@ -67,7 +71,22 @@ type tab int
 const (
 	tabGeneral tab = iota
 	tabAuth
+	tabNetwork
+	tabAdvanced
 	tabRaw
+)
+
+// tabCount is the number of tabs above; used for tab/shift+tab cycling.
+const tabCount = 5
+
+// Override keys we surface on the Network tab. The list is intentionally
+// short — these three cover ~all routine reconfiguration without
+// touching the .ovpn body. Other override keys (ipv6, dns-fallback, ...)
+// can join later as their UX warrants.
+const (
+	overrideServer = "server-override"
+	overridePort   = "port-override"
+	overrideProto  = "proto-override"
 )
 
 type Model struct {
@@ -110,7 +129,7 @@ func (m *Model) Init() tea.Cmd { return tick() }
 // overlay self-explanatory.
 func (m *Model) HelpKeys() []components.KeyHelp {
 	return []components.KeyHelp{
-		{Key: "tab / 1-3", Label: "switch tab (general / auth / raw)"},
+		{Key: "tab / 1-5", Label: "switch tab"},
 		{Key: "f", Label: "[general] toggle favorite"},
 		{Key: "a", Label: "[general] toggle auto-connect"},
 		{Key: "c", Label: "[general] edit country code"},
@@ -119,6 +138,8 @@ func (m *Model) HelpKeys() []components.KeyHelp {
 		{Key: "d", Label: "[auth] clear saved credentials"},
 		{Key: "i", Label: "[auth] open OTP import screen"},
 		{Key: "x", Label: "[auth] remove the TOTP secret"},
+		{Key: "h/p/o", Label: "[network] server / port / proto override"},
+		{Key: "k/u/l", Label: "[advanced] dco / public / locked toggle"},
 		{Key: "↑↓ pgup pgdn", Label: "[raw] scroll"},
 		{Key: "q / esc", Label: "back to the profile list"},
 	}
@@ -176,7 +197,37 @@ func (m *Model) enterMode(next mode) {
 			ti.SetValue(o.CountryCode)
 		}
 		m.input = ti
+	case modeEnterServerOverride:
+		ti := m.newInput("host or empty to clear", false)
+		ti.SetValue(m.currentOverride(overrideServer))
+		m.input = ti
+	case modeEnterPortOverride:
+		ti := m.newInput("e.g. 1194 (empty clears)", false)
+		ti.CharLimit = 6
+		ti.SetValue(m.currentOverride(overridePort))
+		m.input = ti
+	case modeEnterProtoOverride:
+		ti := m.newInput("tcp | udp | empty", false)
+		ti.CharLimit = 5
+		ti.SetValue(m.currentOverride(overrideProto))
+		m.input = ti
 	}
+}
+
+// currentOverride returns the latest known value for an override key
+// straight from openvpn3. Empty when unset or on lookup failure — the
+// edit-form prefill is best-effort and shouldn't block the user.
+func (m *Model) currentOverride(name string) string {
+	ovs, err := m.svc.Overrides(m.cfgPath)
+	if err != nil {
+		return ""
+	}
+	for _, o := range ovs {
+		if o.Name == name {
+			return o.Value
+		}
+	}
+	return ""
 }
 
 // ensureRawLoaded fetches the .ovpn body once per screen lifetime and
@@ -255,13 +306,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// dispatch. Number keys 1-3 jump directly; tab/shift+tab cycle.
 	switch key {
 	case "tab":
-		m.tab = (m.tab + 1) % 3
+		m.tab = tab((int(m.tab) + 1) % tabCount)
 		if m.tab == tabRaw {
 			m.ensureRawLoaded()
 		}
 		return m, nil
 	case "shift+tab":
-		m.tab = (m.tab + 2) % 3
+		m.tab = tab((int(m.tab) + tabCount - 1) % tabCount)
 		if m.tab == tabRaw {
 			m.ensureRawLoaded()
 		}
@@ -273,6 +324,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tab = tabAuth
 		return m, nil
 	case "3":
+		m.tab = tabNetwork
+		return m, nil
+	case "4":
+		m.tab = tabAdvanced
+		return m, nil
+	case "5":
 		m.tab = tabRaw
 		m.ensureRawLoaded()
 		return m, nil
@@ -290,6 +347,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleGeneralKey(key)
 	case tabAuth:
 		return m.handleAuthKey(key)
+	case tabNetwork:
+		return m.handleNetworkKey(key)
+	case tabAdvanced:
+		return m.handleAdvancedKey(key)
 	case tabRaw:
 		// Viewport handles its own scroll keys; forward the raw msg.
 		var cmd tea.Cmd
@@ -297,6 +358,87 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// handleNetworkKey services the `network` tab: each row of overrides
+// has a one-letter shortcut to edit (h/p/o) and a capital variant to
+// unset.
+func (m *Model) handleNetworkKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "h":
+		m.enterMode(modeEnterServerOverride)
+	case "H":
+		return m, m.clearOverrideCmd(overrideServer, "server override cleared")
+	case "p":
+		m.enterMode(modeEnterPortOverride)
+	case "P":
+		return m, m.clearOverrideCmd(overridePort, "port override cleared")
+	case "o":
+		m.enterMode(modeEnterProtoOverride)
+	case "O":
+		return m, m.clearOverrideCmd(overrideProto, "proto override cleared")
+	}
+	return m, nil
+}
+
+// handleAdvancedKey services the `advanced` tab. The three writable
+// boolean flags (DCO, public access, locked down) toggle in-place; the
+// rest are read-only on the daemon side and just render as info.
+func (m *Model) handleAdvancedKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "k":
+		m.toggleBoolProperty("dco", "DCO")
+	case "u":
+		m.toggleBoolProperty("public_access", "public access")
+	case "l":
+		m.toggleBoolProperty("locked_down", "locked down")
+	}
+	return m, nil
+}
+
+// toggleBoolProperty flips one of the writable bool flags and reflects
+// the result via the flash line. The daemon is the source of truth, so
+// we read it back after the write rather than echoing our intended
+// value — when a SetProperty silently no-ops (insufficient privilege
+// for transfer_owner_session, etc) the user sees the actual state.
+func (m *Model) toggleBoolProperty(name, label string) {
+	props, err := m.svc.ConfigProperties(m.cfgPath)
+	if err != nil {
+		m.flashErr = err.Error()
+		return
+	}
+	cur := false
+	switch name {
+	case "dco":
+		cur = props.DCO
+	case "public_access":
+		cur = props.PublicAccess
+	case "locked_down":
+		cur = props.LockedDown
+	}
+	if err := m.svc.SetConfigBool(m.cfgPath, name, !cur); err != nil {
+		m.flashErr = err.Error()
+		return
+	}
+	if cur {
+		m.flash = label + " off"
+	} else {
+		m.flash = label + " on"
+	}
+}
+
+// clearOverrideCmd produces a Cmd that drops one override and flashes
+// the supplied label. Wrapped so the keymap reads naturally without
+// inlining a multi-line closure on every key.
+func (m *Model) clearOverrideCmd(name, label string) tea.Cmd {
+	return func() tea.Msg {
+		if err := m.svc.SetOverride(m.cfgPath, name, ""); err != nil {
+			m.flashErr = err.Error()
+			return tickMsg{}
+		}
+		m.flash = label
+		return tickMsg{}
+	}
 }
 
 // handleGeneralKey services the `general` tab keymap: favorite / auto
@@ -406,8 +548,63 @@ func (m *Model) commit() (tea.Model, tea.Cmd) {
 		}
 		m.mode = modeView
 		return m, nil
+
+	case modeEnterServerOverride:
+		return m.commitOverride(overrideServer, strings.TrimSpace(m.input.Value()),
+			"server", nil)
+
+	case modeEnterPortOverride:
+		val := strings.TrimSpace(m.input.Value())
+		return m.commitOverride(overridePort, val, "port", validatePort)
+
+	case modeEnterProtoOverride:
+		val := strings.ToLower(strings.TrimSpace(m.input.Value()))
+		return m.commitOverride(overrideProto, val, "proto", validateProto)
 	}
 	return m, nil
+}
+
+// commitOverride is the shared "submit one network-tab field" path.
+// Empty value clears the override; a non-nil validator runs first and
+// short-circuits with flashErr on failure, leaving the form open so
+// the user can fix the value without re-entering it.
+func (m *Model) commitOverride(name, value, label string, validate func(string) error) (tea.Model, tea.Cmd) {
+	if validate != nil && value != "" {
+		if err := validate(value); err != nil {
+			m.flashErr = err.Error()
+			return m, nil
+		}
+	}
+	if err := m.svc.SetOverride(m.cfgPath, name, value); err != nil {
+		m.flashErr = err.Error()
+		return m, nil
+	}
+	if value == "" {
+		m.flash = label + " override cleared"
+	} else {
+		m.flash = label + " override → " + value
+	}
+	m.mode = modeView
+	return m, nil
+}
+
+func validatePort(s string) error {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return errors.New("port must be digits only")
+		}
+	}
+	if len(s) > 5 {
+		return errors.New("port out of range")
+	}
+	return nil
+}
+
+func validateProto(s string) error {
+	if s != "tcp" && s != "udp" {
+		return errors.New("proto must be tcp or udp")
+	}
+	return nil
 }
 
 func (m *Model) View() string {
@@ -428,6 +625,10 @@ func (m *Model) View() string {
 		body = m.renderGeneralTab(contentW)
 	case tabAuth:
 		body = m.renderAuthTab(contentW)
+	case tabNetwork:
+		body = m.renderNetworkTab(contentW)
+	case tabAdvanced:
+		body = m.renderAdvancedTab(contentW)
 	case tabRaw:
 		body = m.renderRawTab(contentW)
 	}
@@ -451,7 +652,9 @@ func (m *Model) renderSidebar(w int) string {
 	}{
 		{tabGeneral, "1", "general"},
 		{tabAuth, "2", "auth"},
-		{tabRaw, "3", "raw"},
+		{tabNetwork, "3", "network"},
+		{tabAdvanced, "4", "advanced"},
+		{tabRaw, "5", "raw"},
 	}
 	var rows []string
 	for _, t := range tabs {
@@ -547,6 +750,113 @@ func (m *Model) renderGeneralTab(w int) string {
 	}.Render()
 
 	return parsed + "\n" + overlayBox
+}
+
+// renderNetworkTab — three rows for the supported openvpn3 overrides
+// plus the input form when an override edit is in flight. Each row
+// shows the active value (or "—") and the keys: lowercase to edit,
+// uppercase to clear.
+func (m *Model) renderNetworkTab(w int) string {
+	switch m.mode {
+	case modeEnterServerOverride:
+		return m.renderInputForm("server-override",
+			"Replaces the remote host from the .ovpn body. Empty value clears the override.")
+	case modeEnterPortOverride:
+		return m.renderInputForm("port-override",
+			"Replaces the remote port. Numeric (1..65535). Empty clears.")
+	case modeEnterProtoOverride:
+		return m.renderInputForm("proto-override",
+			"Force the transport: tcp or udp. Empty restores the .ovpn value.")
+	}
+
+	srv, port, proto := "—", "—", "—"
+	if ovs, err := m.svc.Overrides(m.cfgPath); err == nil {
+		for _, o := range ovs {
+			switch o.Name {
+			case overrideServer:
+				srv = o.Value
+			case overridePort:
+				port = o.Value
+			case overrideProto:
+				proto = strings.ToUpper(o.Value)
+			}
+		}
+	}
+
+	overridesBox := components.Box{
+		Title: theme.AccentCyan.Render("◆ ") + "transport overrides",
+		Content: strings.Join([]string{
+			kv("server", overrideValue(srv)) + "  " + theme.Subtle.Render("[h edit  H clear]"),
+			kv("port", overrideValue(port)) + "  " + theme.Subtle.Render("[p edit  P clear]"),
+			kv("proto", overrideValue(proto)) + "  " + theme.Subtle.Render("[o edit  O clear]"),
+		}, "\n"),
+		Width:       w - 4,
+		BorderColor: theme.Pink,
+	}.Render()
+
+	hint := theme.Subtle.Render("Overrides apply on the next Connect — they don't rewrite the .ovpn body.")
+	return overridesBox + "\n" + hint
+}
+
+// renderAdvancedTab — three writable flags + a read-only info block
+// of usage metadata. Helps the user reason about *why* a profile is
+// behaving differently than they expect (transferred ownership, locked
+// down by another user, DCO experiments).
+func (m *Model) renderAdvancedTab(w int) string {
+	props, err := m.svc.ConfigProperties(m.cfgPath)
+	if err != nil {
+		return components.Box{
+			Title:       theme.AccentRed.Render("✗ ") + "advanced",
+			Content:     theme.AccentRed.Render("fetch failed: " + err.Error()),
+			Width:       w - 4,
+			BorderColor: theme.Red,
+		}.Render()
+	}
+
+	flagsBox := components.Box{
+		Title: theme.AccentCyan.Render("◆ ") + "flags",
+		Content: strings.Join([]string{
+			kv("dco", boolToggle(props.DCO)) + "  " + theme.Subtle.Render("[k toggle]") +
+				"  " + theme.Dim.Render("· data channel offload"),
+			kv("public", boolToggle(props.PublicAccess)) + "  " + theme.Subtle.Render("[u toggle]") +
+				"  " + theme.Dim.Render("· visible to other users"),
+			kv("locked", boolToggle(props.LockedDown)) + "  " + theme.Subtle.Render("[l toggle]") +
+				"  " + theme.Dim.Render("· read-only profile body"),
+		}, "\n"),
+		Width:       w - 4,
+		BorderColor: theme.Pink,
+	}.Render()
+
+	infoBox := components.Box{
+		Title: theme.AccentCyan.Render("◆ ") + "info " + theme.Dim.Render("· read-only"),
+		Content: strings.Join([]string{
+			kv("persist", boolToggle(props.Persistent)),
+			kv("xfer", boolToggle(props.TransferOwnerSession)),
+			kv("uses", fmt.Sprintf("%d", props.UsedCount)),
+			kv("import", formatUnix(props.ImportTs)),
+			kv("last", formatUnix(props.LastUsedTs)),
+		}, "\n"),
+		Width:       w - 4,
+		BorderColor: theme.BorderLt,
+	}.Render()
+
+	return flagsBox + "\n" + infoBox
+}
+
+// overrideValue dims placeholders and brightens real values so the eye
+// catches what's been customised at a glance.
+func overrideValue(v string) string {
+	if v == "" || v == "—" {
+		return theme.Subtle.Render("—")
+	}
+	return theme.AccentCyan.Render(v)
+}
+
+func formatUnix(ts int64) string {
+	if ts <= 0 {
+		return theme.Subtle.Render("—")
+	}
+	return theme.Dim.Render(time.Unix(ts, 0).Format("2006-01-02 15:04"))
 }
 
 // renderAuthTab — the original credentials + TOTP layout.
@@ -648,12 +958,13 @@ func (m *Model) renderTOTPSummary() string {
 		}, "\n")
 	}
 	code, _ := m.svc.PreviewOTP(m.cfgPath)
-	codePill := lipgloss.NewStyle().
-		Background(theme.PinkSoft).
-		Foreground(theme.FgBright).
-		Bold(true).
-		Padding(0, 2).
-		Render(prettyCode(code))
+	// Big-font code — takes ~5 rows but reads across the room. The pink
+	// foreground keeps it on-brand with the TOTP card border; the small
+	// pretty-formatted version under it gives copy/paste-friendly text
+	// for callers who don't want to OCR block art.
+	big := lipgloss.NewStyle().Foreground(theme.Pink).Bold(true).
+		Render(components.BigDigits(code))
+	small := lipgloss.NewStyle().Foreground(theme.FgDim).Render(prettyCode(code))
 
 	now := time.Now().Unix()
 	rem := 30 - int(now%30)
@@ -667,7 +978,9 @@ func (m *Model) renderTOTPSummary() string {
 		theme.AccentRed.Render("[x] remove"),
 	}
 	return strings.Join([]string{
-		codePill,
+		big,
+		small,
+		"",
 		countdown,
 		"",
 		strings.Join(actions, "   "),
@@ -716,7 +1029,7 @@ func (m *Model) helpKeys() []components.KeyHelp {
 		return []components.KeyHelp{{Key: "enter", Label: "save"}, {Key: "esc", Label: "cancel"}}
 	}
 	common := []components.KeyHelp{
-		{Key: "1-3", Label: "tab"},
+		{Key: "1-5", Label: "tab"},
 	}
 	switch m.tab {
 	case tabGeneral:
@@ -724,6 +1037,20 @@ func (m *Model) helpKeys() []components.KeyHelp {
 			components.KeyHelp{Key: "f", Label: "favorite"},
 			components.KeyHelp{Key: "a", Label: "auto"},
 			components.KeyHelp{Key: "c", Label: "country"},
+			components.KeyHelp{Key: "q/esc", Label: "back"},
+		)
+	case tabNetwork:
+		return append(common,
+			components.KeyHelp{Key: "h/H", Label: "server set/clear"},
+			components.KeyHelp{Key: "p/P", Label: "port set/clear"},
+			components.KeyHelp{Key: "o/O", Label: "proto set/clear"},
+			components.KeyHelp{Key: "q/esc", Label: "back"},
+		)
+	case tabAdvanced:
+		return append(common,
+			components.KeyHelp{Key: "k", Label: "toggle dco"},
+			components.KeyHelp{Key: "u", Label: "toggle public"},
+			components.KeyHelp{Key: "l", Label: "toggle locked"},
 			components.KeyHelp{Key: "q/esc", Label: "back"},
 		)
 	case tabAuth:

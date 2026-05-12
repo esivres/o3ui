@@ -27,11 +27,25 @@ type ConfigBackend interface {
 	Fetch(path string) (string, error)
 	// Rename changes the display name of an existing config in-place.
 	Rename(path, newName string) error
+	// FetchProperties returns the openvpn3 per-config flag bag.
+	FetchProperties(path string) (ovpn.ConfigProperties, error)
+	// SetBoolProperty writes one of the rw bool flags.
+	SetBoolProperty(path, name string, value bool) error
+	// Overrides reads the active override entries.
+	Overrides(path string) ([]ovpn.Override, error)
+	// SetOverride installs/replaces an override entry (string-typed).
+	SetOverride(path, name, value string) error
+	// UnsetOverride drops one override entry.
+	UnsetOverride(path, name string) error
 }
 
 // SessionBackend is the slice of ovpn.SessionManager the service uses.
 type SessionBackend interface {
 	List() ([]ovpn.Session, error)
+	// Get fetches a single session's properties — used by the event
+	// handler to resolve a fresh SessionCreatedEvent's config_path
+	// without paying for a full List().
+	Get(path string) (ovpn.Session, error)
 	NewTunnel(configPath string) (string, error)
 	Control(path string) SessionControl
 }
@@ -46,6 +60,7 @@ type SessionControl interface {
 	Statistics() (map[string]int64, error)
 	LogVerbosity() (uint32, error)
 	SetLogVerbosity(uint32) error
+	LogForward(enabled bool) error
 }
 
 // LogLevel is the validated 1..6 range the UI presents (1=fatal, 6=verbose).
@@ -69,6 +84,36 @@ const (
 // callers (the desklet) don't have to thread the backend themselves.
 func (s *Service) SessionStatistics(sessionPath string) (map[string]int64, error) {
 	return s.sessions.Control(sessionPath).Statistics()
+}
+
+// ConfigProperties surfaces the openvpn3 per-config flag bag to the
+// UI. Errors are returned as-is so the edit screen can render the
+// daemon's own message (e.g. "method UNKNOWN") instead of pretending
+// the call succeeded with zero values.
+func (s *Service) ConfigProperties(path string) (ovpn.ConfigProperties, error) {
+	return s.configs.FetchProperties(path)
+}
+
+// SetConfigBool flips a writable boolean property on a config. Used
+// for DCO, public_access, locked_down toggles on the Advanced tab.
+func (s *Service) SetConfigBool(path, name string, value bool) error {
+	return s.configs.SetBoolProperty(path, name, value)
+}
+
+// Overrides reads the active openvpn3 overrides. UI uses this on the
+// Network tab to fill in current server/port/proto-override values.
+func (s *Service) Overrides(path string) ([]ovpn.Override, error) {
+	return s.configs.Overrides(path)
+}
+
+// SetOverride installs a string-typed override; the empty string is
+// treated as "unset" so the UI doesn't need two code paths for
+// clearing.
+func (s *Service) SetOverride(path, name, value string) error {
+	if value == "" {
+		return s.configs.UnsetOverride(path, name)
+	}
+	return s.configs.SetOverride(path, name, value)
 }
 
 // FetchConfig returns the raw .ovpn body openvpn3 stored when the
@@ -155,6 +200,9 @@ type OverlayStore interface {
 	Get(configPath string) (overlay.Overlay, error)
 	Upsert(o overlay.Overlay) error
 	Delete(configPath string) error
+	RecordHistoryStart(configPath, sessionPath string, startedAt time.Time) (int64, error)
+	CloseHistoryBySession(sessionPath string, endedAt time.Time, status string, bytesIn, bytesOut int64) (bool, error)
+	History(configPath string) ([]overlay.HistoryEntry, error)
 }
 
 type Service struct {
@@ -166,6 +214,23 @@ type Service struct {
 	sampler  *Sampler         // optional; populated via AttachSampler
 	prefLog  LogLevel         // 0 == use defaultLogLevel
 	connFn   func() ovpn.Conn // optional; populated via AttachBus
+
+	// lastStatus is the most recent StatusChange minor code observed
+	// per session path. We classify the eventual SessionDestroyedEvent
+	// by looking up this map — a clean Disconnect from any source
+	// (this process, the desklet CLI, openvpn3 session-manage) emits
+	// StatusConnDisconnect(9) just before destruction, which we
+	// translate to status="closed". Without this signal we can't
+	// distinguish a user-initiated disconnect from another process
+	// from a genuine network drop.
+	lastStatus map[string]uint32
+
+	// finalStats caches BYTES_IN/OUT captured at the moment of our
+	// own Disconnect call. The eventual SessionDestroyedEvent reads
+	// from here so the closed history row carries real counters; for
+	// disconnects originating elsewhere (desklet, external) the map
+	// is empty and history records 0 bytes — honest, we never saw it.
+	finalStats map[string][2]int64
 }
 
 func New(configs ConfigBackend, sessions SessionBackend) *Service {
@@ -491,13 +556,167 @@ func (s *Service) Connect(ctx context.Context, configPath string) (string, error
 	// are non-fatal — verbosity is a debugging aid, not a connectivity
 	// requirement.
 	_ = ctl.SetLogVerbosity(uint32(s.PreferredLogLevel()))
+	// Turn on Log signal forwarding so the connecting/connected screens
+	// can stream openvpn3's own log lines. Non-fatal — without it, the
+	// log pane just stays empty.
+	_ = ctl.LogForward(true)
 	s.markConnected(configPath)
+	// History is written purely from bus events (HandleEvent in this
+	// process, plus ReconcileLiveSessions on TUI startup) — that's
+	// the only way to cover every source: TUI, desklet CLI, external
+	// `openvpn3 session-manage`, raw dbus-send. So no recording call
+	// here; the SessionCreatedEvent that just landed (or is about to)
+	// is what opens the row.
 	return sessionPath, nil
 }
 
-// Disconnect tears down a session by its D-Bus path.
+// Disconnect tears down a session by its D-Bus path. Final byte
+// counters are stashed for the eventual SessionDestroyedEvent handler
+// to fold into the history row — fetching them after the daemon-side
+// teardown reliably fails because the session object is gone.
 func (s *Service) Disconnect(sessionPath string) error {
-	return s.sessions.Control(sessionPath).Disconnect()
+	ctl := s.sessions.Control(sessionPath)
+	if stats, err := ctl.Statistics(); err == nil {
+		s.stashFinalStats(sessionPath, stats["BYTES_IN"], stats["BYTES_OUT"])
+	}
+	return ctl.Disconnect()
+}
+
+// stashFinalStats remembers byte counters captured right before a
+// disconnect call so HandleEvent can fold them into the history row
+// when SessionDestroyedEvent arrives. Process-local map — only valid
+// for disconnects initiated by this process; cross-process disconnects
+// land in history with bytes = 0 (we never saw the live stats).
+func (s *Service) stashFinalStats(sessionPath string, bytesIn, bytesOut int64) {
+	if s.finalStats == nil {
+		s.finalStats = map[string][2]int64{}
+	}
+	s.finalStats[sessionPath] = [2]int64{bytesIn, bytesOut}
+}
+
+// HandleEvent lets the watcher event-pump (cmd/openvpn3ui-tui/main.go)
+// notify Service about D-Bus signals that affect non-UI state. The
+// only state we care about here is session history finalisation: when
+// a session disappears without us calling Disconnect, the open-ended
+// history row would otherwise stay marked "live" indefinitely.
+//
+// Safe to call from any goroutine — history ops serialise on the
+// overlay store, and recordHistoryEnd is a no-op when the session
+// path is unknown (e.g. user already disconnected, or the session
+// originated outside o3ui).
+func (s *Service) HandleEvent(ev ovpn.Event) {
+	switch e := ev.(type) {
+	case ovpn.SessionCreatedEvent:
+		// New session on the bus — could come from this process, the
+		// desklet CLI, `openvpn3 session-manage`, or anyone with bus
+		// access. Open a history row regardless. config_path is on
+		// the session object; we read it via the backend immediately
+		// because the property is set before openvpn3 emits the
+		// SessionManagerEvent.
+		if s.overlay == nil {
+			return
+		}
+		sess, err := s.sessions.Get(e.Path)
+		if err != nil || sess.ConfigPath == "" {
+			return
+		}
+		_, _ = s.overlay.RecordHistoryStart(sess.ConfigPath, e.Path, time.Now())
+
+	case ovpn.StatusChangeEvent:
+		// Remember the reason code so the eventual destroy event can
+		// classify itself correctly. Only Connection-major events
+		// carry a meaningful disconnect signal; non-Connection majors
+		// (logging, session manager) wouldn't help us label history.
+		if e.Status.Major != ovpn.StatusMajorConnection {
+			return
+		}
+		if s.lastStatus == nil {
+			s.lastStatus = map[string]uint32{}
+		}
+		s.lastStatus[e.Path] = e.Status.Minor
+
+	case ovpn.SessionDestroyedEvent:
+		// Single canonical place that closes a history row. Map the
+		// last seen status code → row status:
+		//   minor 9 (Disconnect)   → "closed" — clean shutdown
+		//   minor 5 (AuthFailed)   → "auth_failed"
+		//   anything else / unset  → "lost" — genuine drop / crash
+		status := "lost"
+		if s.lastStatus != nil {
+			switch s.lastStatus[e.Path] {
+			case ovpn.StatusConnDisconnect:
+				status = "closed"
+			case ovpn.StatusConnAuthFailed:
+				status = "auth_failed"
+			}
+			delete(s.lastStatus, e.Path)
+		}
+		var bytesIn, bytesOut int64
+		if s.finalStats != nil {
+			if pair, ok := s.finalStats[e.Path]; ok {
+				bytesIn, bytesOut = pair[0], pair[1]
+				delete(s.finalStats, e.Path)
+			}
+		}
+		if s.overlay != nil {
+			_, _ = s.overlay.CloseHistoryBySession(e.Path, time.Now(), status, bytesIn, bytesOut)
+		}
+	}
+}
+
+// ReconcileLiveSessions walks the openvpn3 bus once on TUI startup and
+// makes sure every live session has a corresponding open history row.
+// Without this, sessions that were started before the TUI launched
+// (desklet, external) wouldn't appear in history when they eventually
+// disconnect — the destroy handler would close a row that never
+// existed. Idempotent: existing open rows are skipped.
+func (s *Service) ReconcileLiveSessions() {
+	if s.overlay == nil {
+		return
+	}
+	sessions, err := s.sessions.List()
+	if err != nil {
+		return
+	}
+	for i := range sessions {
+		sess := sessions[i]
+		// Build the per-profile history list once and look for an
+		// already-open row for this session_path. Cheap — history is
+		// capped at HistoryCap per profile.
+		hist, err := s.overlay.History(sess.ConfigPath)
+		if err != nil {
+			continue
+		}
+		alreadyOpen := false
+		for _, h := range hist {
+			if h.SessionPath == sess.Path && h.EndedAt.IsZero() {
+				alreadyOpen = true
+				break
+			}
+		}
+		if alreadyOpen {
+			continue
+		}
+		started := sess.CreatedAt
+		if started.IsZero() {
+			started = time.Now()
+		}
+		_, _ = s.overlay.RecordHistoryStart(sess.ConfigPath, sess.Path, started)
+	}
+}
+
+// History exposes the per-profile ring buffer to the UI. Returns nil
+// (not an error) when overlay storage is not wired — keeps the call
+// site free of two layers of "is it configured" gating.
+func (s *Service) History(configPath string) []overlay.HistoryEntry {
+	if s.overlay == nil {
+		return nil
+	}
+	entries, err := s.overlay.History(configPath)
+	if err != nil {
+		return nil
+	}
+	return entries
 }
 
 // RenameConfig changes the display name of a profile. Trims whitespace

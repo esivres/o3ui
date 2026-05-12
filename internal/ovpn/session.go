@@ -202,6 +202,15 @@ func (sc *SessionController) Pause(reason string) error {
 	return sc.call("Pause", reason)
 }
 
+// LogForward toggles per-session Log signal forwarding on this D-Bus
+// connection. When enabled, openvpn3 starts emitting the Log signal on
+// the session object so subscribers (the TUI Watcher) see real-time
+// progress instead of polling status. Costs roughly nothing — it's a
+// daemon-side flag — and Disable is implicit when the session goes away.
+func (sc *SessionController) LogForward(enabled bool) error {
+	return sc.call("LogForward", enabled)
+}
+
 // LogVerbosity reads the session's current log verbosity (0..6 in
 // openvpn3 v27 terms). Returns 0 with an error if the property is missing.
 func (sc *SessionController) LogVerbosity() (uint32, error) {

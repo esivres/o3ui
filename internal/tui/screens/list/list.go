@@ -122,6 +122,7 @@ func (m *Model) HelpKeys() []components.KeyHelp {
 		{Key: "D", Label: "delete profile (confirm)"},
 		{Key: ",", Label: "settings"},
 		{Key: "r", Label: "reload"},
+		{Key: "0-9", Label: "jump to row [N]"},
 	}
 }
 
@@ -407,6 +408,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "r":
 			return m, m.loadCmd()
+		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			// Quick-jump: `N` → cursor moves to the row whose displayed
+			// [N] index matches. The [%d] label is the *absolute* item
+			// index, so after filtering we may have to scan visible
+			// to find the screen-position whose dataIdx == N; if the
+			// target row isn't currently visible we no-op silently
+			// rather than jumping somewhere unexpected.
+			target := int(msg.String()[0] - '0')
+			v := m.visible()
+			for screenIdx, dataIdx := range v {
+				if dataIdx == target {
+					m.cursor = screenIdx
+					break
+				}
+			}
 		case "q":
 			// Root only catches Ctrl+C; the list is the home screen, so
 			// it owns the user-friendly "press q to quit" affordance.
@@ -882,6 +898,11 @@ func (m *Model) renderDetailBox(width, height int) string {
 		kv("auto", boolMark(auto)),
 		kv("last", relTime(it.LastUsed)),
 	}
+	hist := m.svc.History(it.ConfigPath)
+	if len(hist) > 0 {
+		rows = append(rows, "", theme.AccentPurple.Render("recent connects"))
+		rows = append(rows, renderHistory(hist)...)
+	}
 	body := clipLines(strings.Join(rows, "\n"), height-2)
 	return components.Box{
 		Title:       theme.AccentCyan.Render("◆ ") + it.Name,
@@ -975,6 +996,87 @@ func shortAuth(s string) string {
 }
 
 // relTime mirrors the design's "2h ago / yesterday / 3d ago / never" tags.
+// renderHistory turns the ring-buffer entries into compact timeline
+// rows: "HH:MM dur status ↓in ↑out". Ongoing entries (EndedAt zero)
+// show a pulse marker instead of a duration so the user sees which
+// session is the live one. Bytes columns collapse to "—" when zero,
+// since openvpn3 often hands us a zero-stats snapshot on disconnects
+// that race the session destruction.
+func renderHistory(hist []overlay.HistoryEntry) []string {
+	out := make([]string, 0, len(hist))
+	for i := range hist {
+		out = append(out, renderHistoryRow(hist[i]))
+	}
+	return out
+}
+
+func renderHistoryRow(h overlay.HistoryEntry) string {
+	stamp := theme.Dim.Render(h.StartedAt.Format("15:04"))
+	if h.StartedAt.IsZero() {
+		stamp = theme.Dim.Render("—")
+	}
+	var dur, marker string
+	switch {
+	case h.EndedAt.IsZero():
+		marker = theme.AccentMint.Render("●")
+		dur = theme.AccentMint.Render("live")
+	default:
+		marker = statusMarker(h.Status)
+		dur = theme.Dim.Render(shortDuration(h.EndedAt.Sub(h.StartedAt)))
+	}
+	traffic := theme.Subtle.Render("—")
+	if h.BytesIn > 0 || h.BytesOut > 0 {
+		traffic = theme.AccentCyan.Render("↓"+humanBytes(h.BytesIn)) +
+			"  " + theme.AccentPeach.Render("↑"+humanBytes(h.BytesOut))
+	}
+	return marker + " " + stamp + "  " + dur + "  " + traffic
+}
+
+func statusMarker(status string) string {
+	switch status {
+	case "closed":
+		return theme.AccentMint.Render("✓")
+	case "error":
+		return theme.AccentRed.Render("✗")
+	case "auth_failed":
+		return theme.AccentRed.Render("⚠")
+	case "lost":
+		return theme.AccentPeach.Render("◌")
+	default:
+		return theme.Subtle.Render("·")
+	}
+}
+
+func shortDuration(d time.Duration) string {
+	if d <= 0 {
+		return "—"
+	}
+	switch {
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	default:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+}
+
+// humanBytes renders a byte count as a short unit-suffixed string so a
+// history row stays one line wide regardless of magnitude. Mirrors
+// connected/humanRate's tiers without the per-second framing.
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1fG", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1fM", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1fK", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
+}
+
 func relTime(t time.Time) string {
 	if t.IsZero() {
 		return "never"

@@ -58,7 +58,15 @@ type Model struct {
 
 	spinner spinner.Model
 	started time.Time
+
+	// log is a ring buffer of the most recent log lines streamed from
+	// openvpn3 via the SessionLogEvent path. Cap is small (logRingCap)
+	// because the connecting screen has limited vertical room; older
+	// lines drop off the top as new ones arrive.
+	log []components.LogEntry
 }
+
+const logRingCap = 10
 
 func New(svc *app.Service, configPath, configName string) *Model {
 	sp := spinner.New()
@@ -129,8 +137,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionPath = msg.sessionPath
 		m.connectErr = msg.err
 		if msg.err != nil {
+			// Don't bounce to list immediately — the user has to see
+			// the diagnostic and the error text or the failure is
+			// invisible (the connecting screen was the only place
+			// the in-flight context lived). Esc still exits via the
+			// existing CancelMsg path.
 			m.finished = true
-			return m, func() tea.Msg { return FailedMsg{Err: msg.err} }
+			return m, nil
 		}
 
 	case statusTickMsg:
@@ -164,6 +177,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.status.IsConnected() {
 			m.finished = true
 			return m, func() tea.Msg { return DoneMsg{SessionPath: m.sessionPath} }
+		}
+
+	case ovpn.SessionLogEvent:
+		// Only ingest logs for the session we're driving. openvpn3 may
+		// emit Log for sibling sessions on the same connection; filter
+		// them out so the buffer stays on-topic.
+		if m.sessionPath == "" || msg.Path != m.sessionPath {
+			return m, nil
+		}
+		m.log = append(m.log, components.LogEntry{
+			At: time.Now(), Level: msg.Level, Message: strings.TrimSpace(msg.Message),
+		})
+		if len(m.log) > logRingCap {
+			m.log = m.log[len(m.log)-logRingCap:]
 		}
 
 	case ovpn.AttentionRequiredEvent:
@@ -237,7 +264,39 @@ func (m *Model) View() string {
 		{Key: "q", Label: "quit"},
 	}, m.width)
 
+	if m.connectErr != nil {
+		diag := components.Box{
+			Title:       theme.AccentRed.Render("✗ ") + "diagnosis",
+			Content:     m.renderDiagnosis(),
+			Width:       m.width - 4,
+			BorderColor: theme.Red,
+		}.Render()
+		return lipgloss.JoinVertical(lipgloss.Left,
+			header, "", statusBox, "", diag, "", logBox, "", help)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, header, "", statusBox, "", logBox, "", help)
+}
+
+// renderDiagnosis paints the parsed category/title/hint for the
+// current connect error, plus the raw err text underneath so a user
+// who knows openvpn3 internals isn't deprived of the original
+// message. Only invoked when connectErr != nil.
+func (m *Model) renderDiagnosis() string {
+	d := components.Diagnose(m.connectErr)
+	parts := []string{
+		components.Pill(d.Category, theme.Bg, theme.Red) + "  " +
+			theme.Bright.Render(d.Title),
+	}
+	if d.Hint != "" {
+		parts = append(parts, "", theme.AccentPeach.Render("→ ")+
+			lipgloss.NewStyle().Foreground(theme.Fg).Render(d.Hint))
+	}
+	parts = append(parts, "",
+		theme.Subtle.Render("raw: ")+theme.Dim.Render(m.connectErr.Error()),
+		"",
+		theme.Subtle.Render("press esc to return to the profile list"),
+	)
+	return strings.Join(parts, "\n")
 }
 
 // renderProgress shows the live state: spinner, elapsed seconds, the
@@ -337,18 +396,31 @@ func (m *Model) renderLog() string {
 		add(m.started.Add(50*time.Millisecond), "dbus", theme.FgSubtle,
 			theme.AccentCyan.Render(m.sessionPath))
 	}
-	if m.status.Message != "" {
-		add(time.Now(), "info", theme.Cyan, m.status.Message)
+
+	// Live tail of openvpn3 Log signals. Once these start arriving they
+	// replace the placeholder "waiting…" line — they're authoritative.
+	for i := range m.log {
+		lines = append(lines, components.RenderLogLine(m.log[i]))
 	}
-	if m.connectErr != nil {
+
+	if len(m.log) == 0 {
+		if m.status.Message != "" {
+			add(time.Now(), "info", theme.Cyan, m.status.Message)
+		}
+		switch {
+		case m.connectErr != nil:
+			add(time.Now(), "err", theme.Red, m.connectErr.Error())
+		case m.status.IsConnected():
+			add(time.Now(), "info", theme.Mint, "tunnel up — switching to status view")
+		default:
+			add(time.Now(), "...", theme.FgSubtle, "waiting for openvpn3 to finish handshake")
+		}
+	} else if m.connectErr != nil {
 		add(time.Now(), "err", theme.Red, m.connectErr.Error())
-	} else if m.status.IsConnected() {
-		add(time.Now(), "info", theme.Mint, "tunnel up — switching to status view")
-	} else {
-		add(time.Now(), "...", theme.FgSubtle, "waiting for openvpn3 to finish handshake")
 	}
 	return strings.Join(lines, "\n")
 }
+
 
 func shortenSession(path string) string {
 	// "/net/openvpn/v3/sessions/<hash>" → first 8 of hash; fallback to last segment.

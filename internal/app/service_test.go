@@ -41,6 +41,13 @@ func (f *fakeConfigs) Fetch(string) (string, error) {
 	return "client\ndev tun\nremote vpn.test 1194\n", nil
 }
 func (f *fakeConfigs) Rename(string, string) error { return nil }
+func (f *fakeConfigs) FetchProperties(string) (ovpn.ConfigProperties, error) {
+	return ovpn.ConfigProperties{}, nil
+}
+func (f *fakeConfigs) SetBoolProperty(string, string, bool) error { return nil }
+func (f *fakeConfigs) Overrides(string) ([]ovpn.Override, error)  { return nil, nil }
+func (f *fakeConfigs) SetOverride(string, string, string) error   { return nil }
+func (f *fakeConfigs) UnsetOverride(string, string) error         { return nil }
 
 // fakeSessions implements app.SessionBackend.
 type fakeSessions struct {
@@ -51,6 +58,14 @@ type fakeSessions struct {
 }
 
 func (f *fakeSessions) List() ([]ovpn.Session, error) { return f.list, nil }
+func (f *fakeSessions) Get(path string) (ovpn.Session, error) {
+	for i := range f.list {
+		if f.list[i].Path == path {
+			return f.list[i], nil
+		}
+	}
+	return ovpn.Session{}, errors.New("session not found")
+}
 func (f *fakeSessions) NewTunnel(_ string) (string, error) {
 	if f.tunnelErr != nil {
 		return "", f.tunnelErr
@@ -107,6 +122,7 @@ func (c *fakeCtl) SetLogVerbosity(l uint32) error {
 	c.calls = append(c.calls, "SetLogVerbosity")
 	return nil
 }
+func (c *fakeCtl) LogForward(bool) error { return nil }
 
 func TestService_ListConfigsAndSessions(t *testing.T) {
 	cfg := &fakeConfigs{list: []ovpn.Config{{Path: "/p", Name: "home", Valid: true}}}
@@ -414,6 +430,13 @@ func (f *fakeOverlayStore) Delete(p string) error {
 	delete(f.m, p)
 	return nil
 }
+func (f *fakeOverlayStore) RecordHistoryStart(string, string, time.Time) (int64, error) {
+	return 0, nil
+}
+func (f *fakeOverlayStore) CloseHistoryBySession(string, time.Time, string, int64, int64) (bool, error) {
+	return false, nil
+}
+func (f *fakeOverlayStore) History(string) ([]overlay.HistoryEntry, error) { return nil, nil }
 
 func TestService_ActiveSessions_FiltersDisconnected(t *testing.T) {
 	// Backend reports three sessions: one connected, one connecting,

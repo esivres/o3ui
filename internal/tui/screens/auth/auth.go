@@ -162,18 +162,12 @@ func (m *Model) View() string {
 		Background(theme.Panel).
 		Render(body)
 
-	help := components.HelpBar([]components.KeyHelp{
-		{Key: "enter", Label: "authenticate"},
-		{Key: "tab", Label: "toggle remember"},
-		{Key: "esc", Label: "cancel"},
-	}, m.width)
-
-	// Center the modal vertically (give it ~70% of height) and horizontally.
-	canvas := lipgloss.Place(m.width, m.height-2,
-		lipgloss.Center, lipgloss.Center,
-		modal,
-	)
-	return lipgloss.JoinVertical(lipgloss.Left, canvas, help)
+	// Return just the modal card — Root.View paints it over the
+	// screen behind so the user keeps the connecting/edit context.
+	// The screen-wide lipgloss.Place + helpbar that used to live
+	// here turned the modal into a full takeover; with the layered
+	// overlay it would have doubly-centered and erased the base.
+	return modal
 }
 
 // promptLabel turns the openvpn3 prompt name into something nicer than the

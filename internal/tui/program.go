@@ -37,10 +37,18 @@ type Root struct {
 
 	current tea.Model
 
-	// When an Auth modal is active, we save the previous screen so Esc/
-	// Submit returns to it. The reply channel is the round-trip back to
-	// whichever goroutine called Prompter.Ask.
-	suspended    tea.Model
+	// suspended is the previous screen kept around while an FSM-level
+	// detour is on-screen (currently only otpimport — edit→i→otpimport
+	// returns to edit, not list). Stays nil otherwise.
+	suspended tea.Model
+
+	// When an Auth modal is active it lives *alongside* current rather
+	// than swapping it out — the screen behind keeps running and gets
+	// rendered underneath, so the user retains the connecting context
+	// (progress, status, log) while answering the prompt. Used to be
+	// a full screen swap; that lost the user's place every time
+	// openvpn3 asked for a TOTP.
+	authActive   *auth.Model
 	pendingReply chan promptReply
 	pendingCfg   string
 	pendingName  string
@@ -148,6 +156,19 @@ func (m *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.resolveAuth(promptReply{Value: msg.Value}, msg.Remember)
 	case auth.CancelMsg:
 		return m.resolveAuth(promptReply{Err: errors.New("user cancelled auth")}, false)
+	}
+
+	// While the auth modal is up it owns the key stream — but other
+	// messages (timers, tea.WindowSizeMsg, signal events) keep flowing
+	// to the screen behind so it stays alive.
+	if m.authActive != nil {
+		if _, isKey := msg.(tea.KeyMsg); isKey {
+			updated, cmd := m.authActive.Update(msg)
+			if am, ok := updated.(*auth.Model); ok {
+				m.authActive = am
+			}
+			return m, cmd
+		}
 	}
 
 	updated, cmd := m.current.Update(msg)
@@ -329,13 +350,13 @@ func (m *Root) gotoList() (tea.Model, tea.Cmd) {
 	return m, l.Init()
 }
 
-// openAuthModal saves the in-flight screen, swaps in an auth.Model for
-// the prompt, and remembers the reply channel so resolveAuth can write
-// the answer back to the connect goroutine.
+// openAuthModal puts an auth.Model into authActive (layered overlay)
+// without disturbing current. The previous screen behind keeps
+// rendering, so the user sees the connecting context (progress bar,
+// status, log) while typing their TOTP/password.
 //
 //nolint:gocritic // hugeParam: see handleListAction — bubbletea Msg dispatch is by-value
 func (m *Root) openAuthModal(req promptRequest) (tea.Model, tea.Cmd) {
-	m.suspended = m.current
 	m.pendingReply = req.Reply
 	m.pendingCfg = req.ConfigPath
 	m.pendingName = req.Prompt.Name
@@ -353,13 +374,14 @@ func (m *Root) openAuthModal(req promptRequest) (tea.Model, tea.Cmd) {
 
 	modal := auth.New(display, req.Prompt)
 	modal.SetSize(m.width, m.height)
-	m.current = modal
+	m.authActive = modal
 	return m, modal.Init()
 }
 
-// resolveAuth fires the reply back to the waiting goroutine and restores
-// the previously-active screen. If "remember" was ticked, persist the
-// value into overlay/keyring keyed by the prompt name.
+// resolveAuth fires the reply back to the waiting goroutine, dismisses
+// the modal, and lets the screen behind keep running uninterrupted.
+// If "remember" was ticked, persist the value into overlay/keyring
+// keyed by the prompt name.
 func (m *Root) resolveAuth(rep promptReply, remember bool) (tea.Model, tea.Cmd) {
 	if m.pendingReply != nil {
 		m.pendingReply <- rep
@@ -373,14 +395,11 @@ func (m *Root) resolveAuth(rep promptReply, remember bool) (tea.Model, tea.Cmd) 
 			_ = m.svc.RememberPassword(m.pendingCfg, rep.Value)
 		}
 	}
-	if m.suspended != nil {
-		m.current = m.suspended
-		m.suspended = nil
-		// The restored screen needs a fresh tick to keep its loops alive
-		// (e.g. the connecting screen's status poll).
-		return m, m.current.Init()
-	}
-	return m.gotoList()
+	m.authActive = nil
+	// No screen transition: current already holds the connecting (or
+	// other) screen and it has kept ticking the whole time. Returning
+	// nil from here lets the next event reach it naturally.
+	return m, nil
 }
 
 func promptKind(name string) string {
@@ -421,6 +440,9 @@ func contains(s, sub string) bool {
 
 func (m *Root) View() string {
 	base := m.current.View()
+	// Layered overlays in order of priority: confirm > auth > help.
+	// The base view always renders so the screen behind shows through
+	// — including realtime ticks while the user is staring at a modal.
 	if m.pendingConfirm != nil {
 		card := m.pendingConfirm.modal.Render(m.width)
 		if m.width == 0 || m.height == 0 {
@@ -428,18 +450,49 @@ func (m *Root) View() string {
 		}
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, card)
 	}
+	if m.authActive != nil {
+		card := m.authActive.View()
+		if m.width == 0 || m.height == 0 {
+			return card
+		}
+		// Keep the base screen's header strip visible at the top so
+		// the user retains context (e.g. "ovpn3 / connecting · ⟳
+		// session 3a8d…"). Centre the modal in the remaining height.
+		// lipgloss has no proper layer compositor in v1, but this
+		// header-plus-centre pattern is enough to stop the modal
+		// from erasing the user's place.
+		lines := strings.Split(base, "\n")
+		topStrip := ""
+		topH := 2
+		if len(lines) > topH {
+			topStrip = strings.Join(lines[:topH], "\n")
+		}
+		remaining := m.height - topH
+		if remaining < lipgloss.Height(card) {
+			remaining = lipgloss.Height(card)
+		}
+		centered := lipgloss.Place(m.width, remaining,
+			lipgloss.Center, lipgloss.Center, card)
+		if topStrip == "" {
+			return centered
+		}
+		return topStrip + "\n" + centered
+	}
 	if !m.helpOverlay {
 		return base
 	}
 	return m.renderHelpOverlay(base)
 }
 
-// isModalActive reports whether the current screen is itself a modal
-// that should own the `?` key (e.g. the auth prompt's free-text field
-// must accept `?` as input rather than triggering the global help).
+// isModalActive reports whether something is overlaid on top of the
+// current screen that should own the `?` key (e.g. the auth prompt's
+// free-text field must accept `?` as input rather than triggering
+// the global help, and otpimport has its own filter input).
 func (m *Root) isModalActive() bool {
-	switch m.current.(type) {
-	case *auth.Model, *otpimport.Model:
+	if m.authActive != nil || m.pendingConfirm != nil {
+		return true
+	}
+	if _, ok := m.current.(*otpimport.Model); ok {
 		return true
 	}
 	return false

@@ -211,7 +211,7 @@ func (p *FilePicker) Update(msg tea.Msg) (*FilePicker, tea.Cmd) {
 			p.cwd = parent
 			p.readDir()
 		}
-	case "tab":
+	case "t":
 		if len(p.cycle) > 1 {
 			p.cycleIdx = (p.cycleIdx + 1) % len(p.cycle)
 			p.cursor = 0
@@ -289,7 +289,7 @@ func (p *FilePicker) View() string {
 	}
 
 	footer := theme.Subtle.Render(
-		"↑↓ nav · ⏎ open/select · h up · tab filter · / search · esc back",
+		"↑↓ nav · ⏎ open/select · h up · t filter · / search · esc back",
 	)
 	if p.filtMode {
 		footer = theme.AccentPink.Render("/"+p.filter+"_") +

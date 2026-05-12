@@ -1,8 +1,15 @@
-// Package edit renders the per-config editor — for v1 the focus is the
-// "authentication" tab: stored username/password and a TOTP card with
-// import flows (URI, manual base32, account picker for migration QRs).
-// Other tabs from the design (general/network/advanced/raw) are stubbed
-// so the layout matches the mock without pretending to do work it can't.
+// Package edit renders the per-config editor — three tabs:
+//
+//	1 general         profile name (read-only), country flag, favorite /
+//	                  auto-connect toggles, parsed .ovpn summary
+//	2 authentication  stored username + password (keyring), TOTP card
+//	                  with live code preview and import-screen entry
+//	3 raw .ovpn       read-only viewport over the file openvpn3 stored
+//	                  when the profile was imported; useful for debug
+//
+// `network` and `advanced` from the original mock are deliberately not
+// added until we have real per-config knobs from openvpn3 to bind them
+// to. Decorative tabs were already shown to undermine trust in Sprint 1.
 package edit
 
 import (
@@ -11,11 +18,13 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/esivres/openvpn3ui/internal/app"
 	"github.com/esivres/openvpn3ui/internal/otp"
+	"github.com/esivres/openvpn3ui/internal/ovpnconf"
 	"github.com/esivres/openvpn3ui/internal/tui/components"
 	"github.com/esivres/openvpn3ui/internal/tui/theme"
 )
@@ -42,6 +51,7 @@ const (
 	modeView mode = iota
 	modeEnterUsername
 	modeEnterPassword
+	modeEnterCountry
 	modeRemoveOTPConfirm
 )
 
@@ -51,6 +61,15 @@ const (
 // better filepicker and the migration-URI account picker. Pressing
 // `i` is the only OTP-import entry point now.
 
+// tab identifies which tab is currently active.
+type tab int
+
+const (
+	tabGeneral tab = iota
+	tabAuth
+	tabRaw
+)
+
 type Model struct {
 	svc     *app.Service
 	width   int
@@ -58,8 +77,16 @@ type Model struct {
 	cfgPath string
 	cfgName string
 
+	tab   tab
 	mode  mode
 	input textinput.Model
+
+	// raw-tab viewport. Lazily initialised on first switch to that
+	// tab so we don't pay a Fetch() round-trip on every edit-screen
+	// open even when the user only edits credentials.
+	raw       viewport.Model
+	rawLoaded bool
+	rawErr    string
 
 	flash    string // ephemeral success message (cleared on next mode change)
 	flashErr string
@@ -70,6 +97,8 @@ func New(svc *app.Service, configPath, configName string) *Model {
 		svc:     svc,
 		cfgPath: configPath,
 		cfgName: configName,
+		tab:     tabGeneral,
+		raw:     viewport.New(0, 0),
 	}
 }
 
@@ -77,19 +106,36 @@ func (m *Model) Init() tea.Cmd { return tick() }
 
 // HelpKeys feeds the `?` overlay. Mirrors the helpbar at the bottom
 // of the screen but stays exhaustive — overlay is for discovery,
-// footer for muscle memory.
+// footer for muscle memory. Tab-specific keys are tagged to make the
+// overlay self-explanatory.
 func (m *Model) HelpKeys() []components.KeyHelp {
 	return []components.KeyHelp{
-		{Key: "u", Label: "edit / set username"},
-		{Key: "p", Label: "edit / set password"},
-		{Key: "d", Label: "clear saved credentials"},
-		{Key: "i", Label: "open OTP import screen"},
-		{Key: "x", Label: "remove the TOTP secret"},
+		{Key: "tab / 1-3", Label: "switch tab (general / auth / raw)"},
+		{Key: "f", Label: "[general] toggle favorite"},
+		{Key: "a", Label: "[general] toggle auto-connect"},
+		{Key: "c", Label: "[general] edit country code"},
+		{Key: "u", Label: "[auth] edit / set username"},
+		{Key: "p", Label: "[auth] edit / set password"},
+		{Key: "d", Label: "[auth] clear saved credentials"},
+		{Key: "i", Label: "[auth] open OTP import screen"},
+		{Key: "x", Label: "[auth] remove the TOTP secret"},
+		{Key: "↑↓ pgup pgdn", Label: "[raw] scroll"},
 		{Key: "q / esc", Label: "back to the profile list"},
 	}
 }
 
-func (m *Model) SetSize(w, h int) { m.width, m.height = w, h }
+func (m *Model) SetSize(w, h int) {
+	m.width, m.height = w, h
+	// raw viewport fits the available content area: total height
+	// minus header (3) - tabbar (2) - footer (2) - chrome (a couple
+	// extra for the box border + breathing room).
+	vh := h - 10
+	if vh < 6 {
+		vh = 6
+	}
+	m.raw.Width = w - 4
+	m.raw.Height = vh
+}
 
 func tick() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg { return tickMsg{} })
@@ -122,7 +168,43 @@ func (m *Model) enterMode(next mode) {
 		m.input = ti
 	case modeEnterPassword:
 		m.input = m.newInput("vpn password", true)
+	case modeEnterCountry:
+		ti := m.newInput("two-letter code, e.g. DE", false)
+		ti.CharLimit = 4
+		ti.Width = 8
+		if o, ok := m.svc.GetOverlay(m.cfgPath); ok && o.CountryCode != "" {
+			ti.SetValue(o.CountryCode)
+		}
+		m.input = ti
 	}
+}
+
+// ensureRawLoaded fetches the .ovpn body once per screen lifetime and
+// wires it into the viewport. We don't preload because most edit-screen
+// visits don't open the raw tab.
+func (m *Model) ensureRawLoaded() {
+	if m.rawLoaded {
+		return
+	}
+	m.rawLoaded = true
+	body, err := m.svc.FetchConfig(m.cfgPath)
+	if err != nil {
+		m.rawErr = err.Error()
+		return
+	}
+	// Colourise inline blocks dimly so the eye lands on the human-
+	// readable directives. Pure cosmetic — no syntax tree.
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "#"), strings.HasPrefix(trimmed, ";"):
+			lines[i] = theme.Subtle.Render(line)
+		case strings.HasPrefix(trimmed, "<"), strings.HasPrefix(trimmed, "-----"):
+			lines[i] = theme.Dim.Render(line)
+		}
+	}
+	m.raw.SetContent(strings.Join(lines, "\n"))
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -169,21 +251,97 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// View mode — top-level shortcuts.
+	// Tab switching — applies across all tabs, before any tab-local
+	// dispatch. Number keys 1-3 jump directly; tab/shift+tab cycle.
+	switch key {
+	case "tab":
+		m.tab = (m.tab + 1) % 3
+		if m.tab == tabRaw {
+			m.ensureRawLoaded()
+		}
+		return m, nil
+	case "shift+tab":
+		m.tab = (m.tab + 2) % 3
+		if m.tab == tabRaw {
+			m.ensureRawLoaded()
+		}
+		return m, nil
+	case "1":
+		m.tab = tabGeneral
+		return m, nil
+	case "2":
+		m.tab = tabAuth
+		return m, nil
+	case "3":
+		m.tab = tabRaw
+		m.ensureRawLoaded()
+		return m, nil
+	}
+
+	// Global view-mode shortcuts.
 	switch key {
 	case "esc", "q":
 		return m, func() tea.Msg { return BackMsg{} }
+	}
+
+	// Tab-specific dispatch.
+	switch m.tab {
+	case tabGeneral:
+		return m.handleGeneralKey(key)
+	case tabAuth:
+		return m.handleAuthKey(key)
+	case tabRaw:
+		// Viewport handles its own scroll keys; forward the raw msg.
+		var cmd tea.Cmd
+		m.raw, cmd = m.raw.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+// handleGeneralKey services the `general` tab keymap: favorite / auto
+// toggles and the country-code editor.
+func (m *Model) handleGeneralKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "f":
+		fav := false
+		if o, ok := m.svc.GetOverlay(m.cfgPath); ok {
+			fav = o.Favorite
+		}
+		if err := m.svc.SetFavorite(m.cfgPath, !fav); err != nil {
+			m.flashErr = err.Error()
+		} else if fav {
+			m.flash = "favorite cleared"
+		} else {
+			m.flash = "favorite set"
+		}
+	case "a":
+		auto := false
+		if o, ok := m.svc.GetOverlay(m.cfgPath); ok {
+			auto = o.AutoConnect
+		}
+		if err := m.svc.SetAutoConnect(m.cfgPath, !auto); err != nil {
+			m.flashErr = err.Error()
+		} else if auto {
+			m.flash = "auto-connect off"
+		} else {
+			m.flash = "auto-connect on"
+		}
+	case "c":
+		m.enterMode(modeEnterCountry)
+	}
+	return m, nil
+}
+
+// handleAuthKey is the original edit-screen view-mode dispatch, now
+// scoped to the auth tab.
+func (m *Model) handleAuthKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
 	case "u":
 		m.enterMode(modeEnterUsername)
 	case "p":
 		m.enterMode(modeEnterPassword)
 	case "i":
-		// Hand off to the dedicated import screen — three-tab layout,
-		// file picker for QR, live preview after success. The old
-		// inline `m` (manual base32) and `g` (QR path) keys are gone:
-		// the same flows live in otpimport with a real filepicker
-		// and the multi-account picker for Google-Authenticator
-		// migration URIs, no point maintaining two implementations.
 		cp, cn := m.cfgPath, m.cfgName
 		return m, func() tea.Msg { return OpenOTPImportMsg{ConfigPath: cp, ConfigName: cn} }
 	case "x":
@@ -213,8 +371,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// commit handles Enter inside a sub-form (username / password). OTP
-// flows live in the otpimport screen and never reach commit here.
+// commit handles Enter inside a sub-form (username / password /
+// country). OTP flows live in the otpimport screen.
 func (m *Model) commit() (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modeEnterUsername:
@@ -234,6 +392,20 @@ func (m *Model) commit() (tea.Model, tea.Cmd) {
 		m.flash = "password saved to keyring"
 		m.mode = modeView
 		return m, nil
+
+	case modeEnterCountry:
+		cc := strings.ToUpper(strings.TrimSpace(m.input.Value()))
+		if err := m.svc.SetCountryCode(m.cfgPath, cc); err != nil {
+			m.flashErr = err.Error()
+			return m, nil
+		}
+		if cc == "" {
+			m.flash = "country cleared"
+		} else {
+			m.flash = "country set to " + cc
+		}
+		m.mode = modeView
+		return m, nil
 	}
 	return m, nil
 }
@@ -247,25 +419,150 @@ func (m *Model) View() string {
 		[]string{components.Pill(shortPath(m.cfgPath), theme.FgDim, theme.Panel2)},
 		m.width,
 	)
-	// The decorative 5-tab sidebar (general / network / advanced /
-	// raw .ovpn) is gone — only the authentication tab actually does
-	// anything, so a sidebar made up of dead controls actively
-	// undermined trust. When more tabs land we'll bring it back with
-	// real wiring; for now the screen uses the full width.
-	body := lipgloss.NewStyle().Width(m.width - 4).Render(m.renderRight())
+	tabbar := m.renderTabBar()
+	var body string
+	switch m.tab {
+	case tabGeneral:
+		body = m.renderGeneralTab()
+	case tabAuth:
+		body = m.renderAuthTab()
+	case tabRaw:
+		body = m.renderRawTab()
+	}
+	body = lipgloss.NewStyle().Width(m.width - 4).Render(body)
+	if flash := m.renderFlash(); flash != "" {
+		body = body + "\n\n" + flash
+	}
 	help := components.HelpBar(m.helpKeys(), m.width)
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", help)
+	return lipgloss.JoinVertical(lipgloss.Left, header, tabbar, "", body, "", help)
 }
 
-func (m *Model) renderRight() string {
+// renderTabBar shows 1/2/3 tab pills. Active one uses the accent fill,
+// inactive ones the muted panel background — same idiom as the desklet
+// tab strip.
+func (m *Model) renderTabBar() string {
+	tabs := []struct {
+		idx   tab
+		label string
+	}{
+		{tabGeneral, "1 general"},
+		{tabAuth, "2 authentication"},
+		{tabRaw, "3 raw .ovpn"},
+	}
+	pieces := make([]string, 0, len(tabs))
+	for _, t := range tabs {
+		fg, bg := theme.FgDim, theme.Panel2
+		if t.idx == m.tab {
+			fg, bg = theme.Bg, theme.Pink
+		}
+		pieces = append(pieces, components.Pill(t.label, fg, bg))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, pieces...)
+}
+
+// renderGeneralTab: a row of kv pairs (parsed .ovpn summary + overlay
+// flags). All read-only except for `f`/`a`/`c` actions, which mutate
+// in place and flash the result.
+func (m *Model) renderGeneralTab() string {
+	// Inline country editor lives in the same area as the value, like
+	// the credential editors do on the auth tab — feels consistent.
+	if m.mode == modeEnterCountry {
+		return m.renderInputForm("country code (2 letters)",
+			"Used for the CC badge on the list. Leave empty to clear.")
+	}
+
+	fav, auto, cc := false, false, ""
+	if o, ok := m.svc.GetOverlay(m.cfgPath); ok {
+		fav, auto, cc = o.Favorite, o.AutoConnect, o.CountryCode
+	}
+
+	// Parse .ovpn body lazily for the host / cipher / auth summary.
+	// Failures here are non-fatal: the tab still renders the overlay
+	// half of the info.
+	host := theme.Subtle.Render("—")
+	proto := theme.Subtle.Render("—")
+	cipher := theme.Subtle.Render("—")
+	authStr := theme.Subtle.Render("—")
+	if body, err := m.svc.FetchConfig(m.cfgPath); err == nil {
+		if prof, perr := ovpnconf.ParseString(body); perr == nil && prof != nil {
+			r := prof.PrimaryRemote()
+			if r.Host != "" {
+				h := theme.AccentCyan.Render(r.Host)
+				if r.Port > 0 {
+					h += theme.Dim.Render(fmt.Sprintf(":%d", r.Port))
+				}
+				host = h
+			}
+			if r.Proto != "" {
+				proto = theme.Dim.Render(strings.ToUpper(r.Proto))
+			}
+			if prof.Cipher != "" {
+				cipher = theme.Dim.Render(prof.Cipher)
+			}
+			if am := prof.AuthMethod(); am != "" {
+				authStr = theme.AccentPink.Render(am)
+			}
+		}
+	}
+
+	ccText := theme.Subtle.Render("—")
+	if cc != "" {
+		ccText = theme.AccentCyan.Render(cc)
+	}
+
+	parsed := components.Box{
+		Title: theme.AccentCyan.Render("◆ ") + "from .ovpn",
+		Content: strings.Join([]string{
+			kv("host", host),
+			kv("proto", proto),
+			kv("cipher", cipher),
+			kv("auth", authStr),
+		}, "\n"),
+		Width:       m.width - 4,
+		BorderColor: theme.BorderLt,
+	}.Render()
+
+	overlayBox := components.Box{
+		Title: theme.AccentPink.Render("◆ ") + "overlay",
+		Content: strings.Join([]string{
+			kv("name", theme.Bright.Render(m.cfgName)) + "  " + theme.Subtle.Render("[R on list]"),
+			kv("country", ccText) + "  " + theme.Subtle.Render("[c edit]"),
+			kv("favorite", boolToggle(fav)) + "  " + theme.Subtle.Render("[f toggle]"),
+			kv("auto", boolToggle(auto)) + "  " + theme.Subtle.Render("[a toggle]"),
+		}, "\n"),
+		Width:       m.width - 4,
+		BorderColor: theme.Pink,
+	}.Render()
+
+	return parsed + "\n" + overlayBox
+}
+
+// renderAuthTab — the original credentials + TOTP layout.
+func (m *Model) renderAuthTab() string {
 	creds := m.renderCreds()
 	totp := m.renderTOTP()
-	flash := m.renderFlash()
-	parts := []string{creds, "", totp}
-	if flash != "" {
-		parts = append(parts, "", flash)
+	return creds + "\n" + totp
+}
+
+// renderRawTab — viewport over the .ovpn body. Errors are surfaced
+// as a one-line message instead of an empty box.
+func (m *Model) renderRawTab() string {
+	if m.rawErr != "" {
+		return theme.AccentRed.Render("fetch failed: " + m.rawErr)
 	}
-	return strings.Join(parts, "\n")
+	return components.Box{
+		Title:       theme.AccentCyan.Render("◆ ") + "raw .ovpn (read-only)",
+		Content:     m.raw.View(),
+		Width:       m.width - 4,
+		BorderColor: theme.BorderLt,
+	}.Render()
+}
+
+func boolToggle(b bool) string {
+	if b {
+		return theme.AccentMint.Render("on ✓")
+	}
+	return theme.Subtle.Render("off")
 }
 
 func (m *Model) renderCreds() string {

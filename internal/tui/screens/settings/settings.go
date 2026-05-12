@@ -6,6 +6,7 @@ package settings
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 
@@ -13,9 +14,18 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/esivres/openvpn3ui/internal/app"
+	"github.com/esivres/openvpn3ui/internal/buildinfo"
 	"github.com/esivres/openvpn3ui/internal/ovpn"
 	"github.com/esivres/openvpn3ui/internal/tui/components"
 	"github.com/esivres/openvpn3ui/internal/tui/theme"
+)
+
+// tab identifies which sub-screen of settings the user is on.
+type tab int
+
+const (
+	tabBackend tab = iota
+	tabAbout
 )
 
 // BackMsg signals the root the user is done with this screen.
@@ -27,6 +37,7 @@ type Model struct {
 	svc    *app.Service
 	width  int
 	height int
+	tab    tab
 
 	services []ovpn.BackendService
 	loadErr  error
@@ -38,8 +49,9 @@ func New(svc *app.Service) *Model { return &Model{svc: svc} }
 // HelpKeys feeds the `?` overlay.
 func (m *Model) HelpKeys() []components.KeyHelp {
 	return []components.KeyHelp{
-		{Key: "1–6", Label: "log verbosity for new sessions"},
-		{Key: "r", Label: "refresh backend services"},
+		{Key: "tab", Label: "switch tab (backend / about)"},
+		{Key: "1–6", Label: "[backend] log verbosity for new sessions"},
+		{Key: "r", Label: "[backend] refresh services"},
 		{Key: "q / esc", Label: "back"},
 	}
 }
@@ -81,15 +93,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc", "q":
 			return m, func() tea.Msg { return BackMsg{} }
-		case "1", "2", "3", "4", "5", "6":
-			level := app.LogLevel(int(msg.String()[0]) - '0')
-			if err := m.svc.SetPreferredLogLevel(level); err != nil {
-				m.flash = "✗ " + err.Error()
-			} else {
-				m.flash = fmt.Sprintf("✓ default verbosity → %d (%s)", level, levelName(level))
+		case "tab":
+			m.tab = (m.tab + 1) % 2
+			return m, nil
+		case "shift+tab":
+			m.tab = (m.tab + 1) % 2
+			return m, nil
+		}
+		if m.tab == tabBackend {
+			switch msg.String() {
+			case "1", "2", "3", "4", "5", "6":
+				level := app.LogLevel(int(msg.String()[0]) - '0')
+				if err := m.svc.SetPreferredLogLevel(level); err != nil {
+					m.flash = "✗ " + err.Error()
+				} else {
+					m.flash = fmt.Sprintf("✓ default verbosity → %d (%s)", level, levelName(level))
+				}
+			case "r":
+				return m, m.refresh()
 			}
-		case "r":
-			return m, m.refresh()
 		}
 	}
 	return m, nil
@@ -105,18 +127,86 @@ func (m *Model) View() string {
 		m.width,
 	)
 
-	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		// Decorative 5-tab sidebar removed (only 'dbus & backend'
-		// was real). When connection/network/about land we'll bring
-		// it back with working entries. Full width for now.
-		lipgloss.NewStyle().Width(m.width-4).Render(m.renderRight()),
-	)
+	tabbar := m.renderTabBar()
+	var body string
+	switch m.tab {
+	case tabBackend:
+		body = m.renderRight()
+	case tabAbout:
+		body = m.renderAbout()
+	}
+	body = lipgloss.NewStyle().Width(m.width - 4).Render(body)
 	help := components.HelpBar([]components.KeyHelp{
 		{Key: "1-6", Label: "log level"},
 		{Key: "r", Label: "refresh"},
 		{Key: "q/esc", Label: "back"},
 	}, m.width)
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", help)
+	return lipgloss.JoinVertical(lipgloss.Left, header, tabbar, "", body, "", help)
+}
+
+// renderTabBar mirrors the edit-screen tab strip — active pill in
+// brand pink, inactive in panel grey.
+func (m *Model) renderTabBar() string {
+	tabs := []struct {
+		idx   tab
+		label string
+	}{
+		{tabBackend, "1 backend"},
+		{tabAbout, "2 about"},
+	}
+	pieces := make([]string, 0, len(tabs))
+	for _, t := range tabs {
+		fg, bg := theme.FgDim, theme.Panel2
+		if t.idx == m.tab {
+			fg, bg = theme.Bg, theme.Pink
+		}
+		pieces = append(pieces, components.Pill(t.label, fg, bg))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, pieces...)
+}
+
+// renderAbout shows release stamps goreleaser injected into the
+// buildinfo package, plus the Go runtime info — same data a user
+// would otherwise have to grep out of `o3ui --version` (which we
+// don't ship yet) or read from package metadata.
+func (m *Model) renderAbout() string {
+	rows := []string{
+		kv("version", versionPill()),
+		kv("commit", or(buildinfo.Commit, theme.Subtle.Render("—"))),
+		kv("built", or(buildinfo.Date, theme.Subtle.Render("—"))),
+		kv("go", runtime.Version()),
+		kv("os/arch", runtime.GOOS+"/"+runtime.GOARCH),
+		"",
+		theme.Dim.Render("o3ui — OpenVPN3 controller · MIT licensed"),
+		theme.AccentPurple.Render("https://github.com/esivres/o3ui"),
+	}
+	return components.Box{
+		Title:       theme.AccentPink.Render("◆ ") + "about",
+		Content:     strings.Join(rows, "\n"),
+		Width:       m.width - 4,
+		BorderColor: theme.BorderLt,
+	}.Render()
+}
+
+// versionPill paints 'dev' (unstamped local build) in a warning tone
+// so it's obvious you're not on a tagged release, and stamped versions
+// in mint.
+func versionPill() string {
+	if buildinfo.Version == "" || buildinfo.Version == "dev" {
+		return components.Pill("dev (local build)", theme.Bg, theme.Peach)
+	}
+	return components.Pill(buildinfo.Version, theme.Bg, theme.Mint)
+}
+
+func or(v, fallback string) string {
+	if v == "" {
+		return fallback
+	}
+	return v
+}
+
+func kv(k, v string) string {
+	return lipgloss.NewStyle().Foreground(theme.FgDim).Width(10).Render(k) + " " + v
 }
 
 func (m *Model) renderRight() string {

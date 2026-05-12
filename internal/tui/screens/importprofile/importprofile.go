@@ -73,7 +73,7 @@ func (m *Model) HelpKeys() []components.KeyHelp {
 		{Key: "↑↓", Label: "browse files"},
 		{Key: "⏎", Label: "open dir / select file"},
 		{Key: "h / backspace", Label: "parent dir"},
-		{Key: "tab", Label: "cycle extension filter"},
+		{Key: "t", Label: "cycle extension filter"},
 		{Key: "/", Label: "substring search"},
 		{Key: "esc", Label: "back"},
 	}
@@ -192,7 +192,7 @@ func (m *Model) View() string {
 		{Key: "↑↓", Label: "nav"},
 		{Key: "⏎", Label: "open / select"},
 		{Key: "/", Label: "search"},
-		{Key: "tab", Label: "filter"},
+		{Key: "t", Label: "filter"},
 		{Key: "esc", Label: "back"},
 	}, m.width)
 	return lipgloss.JoinVertical(lipgloss.Left, header, hint, body, help)

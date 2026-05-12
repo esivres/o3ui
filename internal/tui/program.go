@@ -245,6 +245,20 @@ func (m *Root) handleListAction(a list.ActionMsg) (tea.Model, tea.Cmd) {
 		next.SetSize(m.width, m.height)
 		m.current = next
 		return m, next.Init()
+	case "quit-confirm":
+		// `q` in list when there's an active tunnel. Ask first; a
+		// silent process exit while VPN stays up is the classic
+		// "wait, did it disconnect?" footgun.
+		m.pendingConfirm = &confirmRequest{
+			modal: components.ConfirmModal{
+				Title:    "Quit while a tunnel is up?",
+				Body:     "The VPN session keeps running in openvpn3 after o3ui exits. Press y to quit, n to stay.",
+				YesLabel: "Quit",
+				Danger:   false,
+			},
+			onYes: tea.Quit,
+		}
+		return m, nil
 	}
 	// Other actions (stats) — not yet routed.
 	return m, nil

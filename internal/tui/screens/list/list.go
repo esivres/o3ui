@@ -340,6 +340,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q":
 			// Root only catches Ctrl+C; the list is the home screen, so
 			// it owns the user-friendly "press q to quit" affordance.
+			// But: if a tunnel is up, dropping out without a sanity
+			// check is the kind of thing a user does once and then has
+			// to figure out why their VPN is still running. Emit a
+			// confirm ActionMsg — Root has the modal primitive, list
+			// doesn't need its own.
+			for i := range m.items {
+				if m.items[i].HasSession {
+					return m, func() tea.Msg { return ActionMsg{Kind: "quit-confirm"} }
+				}
+			}
 			return m, tea.Quit
 		}
 	}

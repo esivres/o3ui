@@ -7,10 +7,10 @@ package otpimport
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -56,7 +56,7 @@ type Model struct {
 	stage       stage
 	uriInput    textinput.Model
 	manualInput textinput.Model
-	picker      filepicker.Model
+	picker      *components.FilePicker
 
 	accounts      []otpimport.Account
 	accountCursor int
@@ -91,21 +91,23 @@ func New(svc *app.Service, configPath, configName string) *Model {
 	manual.Prompt = ""
 	manual.Placeholder = "JBSWY3DPEHPK3PXP"
 
-	fp := filepicker.New()
-	// Don't restrict by extension — bubbles' canSelect() does a
-	// case-sensitive HasSuffix, so ".png" rejects "Screenshot.PNG"
-	// silently. Easier UX: let any file through and surface a clear
-	// "not an image" error from our QR decoder if it's wrong.
-	fp.AllowedTypes = nil
-	// Start in the directory the user invoked us from. Authenticator-app
-	// QR screenshots usually land in CWD or Downloads; jumping straight
-	// to $HOME forces extra navigation.
-	if cwd, err := os.Getwd(); err == nil {
-		fp.CurrentDirectory = cwd
-	} else if home, err := os.UserHomeDir(); err == nil {
-		fp.CurrentDirectory = home
+	// Custom FilePicker with a "QR images" cycle entry — Tab gates
+	// the list down to .png/.jpg/.jpeg, `/` does substring search.
+	cycle := []components.FilePickerFilter{
+		{Label: "all files"},
+		{
+			Label: "images",
+			Match: func(e os.DirEntry) bool {
+				ext := strings.ToLower(filepath.Ext(e.Name()))
+				return ext == ".png" || ext == ".jpg" || ext == ".jpeg"
+			},
+		},
 	}
-	fp.ShowHidden = false
+	start, _ := os.Getwd()
+	if start == "" {
+		start, _ = os.UserHomeDir()
+	}
+	fp := components.NewFilePicker(start, cycle)
 
 	return &Model{
 		svc: svc, cfgPath: configPath, cfgName: configName,
@@ -114,7 +116,7 @@ func New(svc *app.Service, configPath, configName string) *Model {
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, m.picker.Init(), tick())
+	return tea.Batch(textinput.Blink, tick())
 }
 
 func tick() tea.Cmd {
@@ -128,7 +130,7 @@ func (m *Model) SetSize(w, h int) {
 	if ph < 8 {
 		ph = 8
 	}
-	m.picker.SetHeight(ph)
+	m.picker.SetSize(w-4, ph)
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -248,20 +250,15 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.manualInput, cmd = m.manualInput.Update(msg)
 		return m, cmd
 	case tabQR:
-		// Enter / Right go through to the file picker — bubbles
-		// filepicker uses Enter as the "select file" key and
-		// Right/l only to enter directories.
+		// Our custom FilePicker handles Enter (open dir / select
+		// file) and surfaces the selection via Picked() rather than
+		// a tuple-returning sniffer. Tab and `/` are consumed by
+		// the picker for filter cycling and substring search.
 		var cmd tea.Cmd
 		m.picker, cmd = m.picker.Update(msg)
-		if did, path := m.picker.DidSelectFile(msg); did {
+		if path := m.picker.Picked(); path != "" {
 			m.flashErr = ""
 			return m, m.importFromFile(path)
-		}
-		// Tell the user when they tried to select a file the picker
-		// rejected (wrong extension) — silent rejection is the worst
-		// possible UX here.
-		if did, path := m.picker.DidSelectDisabledFile(msg); did {
-			m.flashErr = "not an image file: " + path
 		}
 		return m, cmd
 	}
@@ -456,7 +453,7 @@ func (m *Model) renderInput() string {
 		// The default filepicker view doesn't show the cwd anywhere,
 		// which made it look like the cursor was "lost" after a few
 		// dir hops. Surface it as a breadcrumb above the listing.
-		path := theme.AccentCyan.Render(m.picker.CurrentDirectory)
+		path := theme.AccentCyan.Render(m.picker.CurrentDir())
 		help := theme.Subtle.Render("↑↓ navigate · enter open dir / select file · backspace up")
 		return title + "  " + path + "\n\n" + m.picker.View() + "\n" + help
 	case tabManual:

@@ -6,8 +6,9 @@
 //   - raw `.ovpn` / `.conf` config  → Service.ImportFromFile
 //     (the classic openvpn3 config-import flow)
 //
-// One screen, two file types — the user shouldn't have to remember
-// which key opens which import flow.
+// Uses our own components.FilePicker rather than bubbles/filepicker so
+// the user gets `Tab` to cycle the extension filter and `/` for
+// substring search — two affordances bubbles' picker doesn't offer.
 package importprofile
 
 import (
@@ -17,7 +18,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/filepicker"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -35,32 +35,46 @@ type Model struct {
 	width  int
 	height int
 
-	picker filepicker.Model
-	err    string
+	picker *components.FilePicker
 }
 
 func New(svc *app.Service) *Model {
-	fp := filepicker.New()
-	// Accept any extension; the schema check happens after read.
-	// Filtering on .json would lock out users who renamed the file.
-	fp.AllowedTypes = nil
-	fp.ShowHidden = false
-	// Start in the user's home where exports default to landing.
-	if home, err := os.UserHomeDir(); err == nil {
-		fp.CurrentDirectory = home
-	} else if cwd, err := os.Getwd(); err == nil {
-		fp.CurrentDirectory = cwd
+	// Filter cycle: "all" is always the first entry so Tab can wrap
+	// back to it; the other two preselect the formats this screen
+	// knows how to consume, which is the 99% case for the user.
+	cycle := []components.FilePickerFilter{
+		{Label: "all files"},
+		{
+			Label: ".ovpn / .conf",
+			Match: func(e os.DirEntry) bool {
+				ext := strings.ToLower(filepath.Ext(e.Name()))
+				return ext == ".ovpn" || ext == ".conf"
+			},
+		},
+		{
+			Label: ".o3ui.json",
+			Match: func(e os.DirEntry) bool {
+				return strings.HasSuffix(strings.ToLower(e.Name()), ".o3ui.json")
+			},
+		},
 	}
-	return &Model{svc: svc, picker: fp}
+	start, _ := os.Getwd()
+	if start == "" {
+		start, _ = os.UserHomeDir()
+	}
+	return &Model{svc: svc, picker: components.NewFilePicker(start, cycle)}
 }
 
-func (m *Model) Init() tea.Cmd { return m.picker.Init() }
+func (m *Model) Init() tea.Cmd { return nil }
 
 // HelpKeys feeds the `?` overlay.
 func (m *Model) HelpKeys() []components.KeyHelp {
 	return []components.KeyHelp{
 		{Key: "↑↓", Label: "browse files"},
-		{Key: "enter", Label: "open directory or import selected file"},
+		{Key: "⏎", Label: "open dir / select file"},
+		{Key: "h / backspace", Label: "parent dir"},
+		{Key: "tab", Label: "cycle extension filter"},
+		{Key: "/", Label: "substring search"},
 		{Key: "esc", Label: "back"},
 	}
 }
@@ -71,7 +85,7 @@ func (m *Model) SetSize(w, h int) {
 	if ph < 8 {
 		ph = 8
 	}
-	m.picker.SetHeight(ph)
+	m.picker.SetSize(w-4, ph)
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -79,19 +93,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "esc", "q":
+		// Esc is ours only when the picker isn't actively swallowing
+		// keys for its substring-filter input; otherwise we'd
+		// short-circuit the filter close.
+		if msg.String() == "esc" && !m.picker.FilterMode() {
 			return m, func() tea.Msg { return BackMsg{} }
 		}
 	}
-
 	var cmd tea.Cmd
 	m.picker, cmd = m.picker.Update(msg)
-	if picked, path := m.picker.DidSelectFile(msg); picked {
+	if path := m.picker.Picked(); path != "" {
 		return m, m.consume(path)
-	}
-	if picked, path := m.picker.DidSelectDisabledFile(msg); picked {
-		m.err = "cannot read " + filepath.Base(path)
 	}
 	return m, cmd
 }
@@ -119,7 +131,6 @@ func (m *Model) consume(path string) tea.Cmd {
 		}
 		return backWithFlash(fmt.Sprintf("✓ imported %s (portable)", p.Name), false)
 	}
-	// Raw .ovpn — derive a profile name from the filename, sans ext.
 	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	if name == "" {
 		name = "imported"
@@ -155,9 +166,6 @@ func isPortableBundle(data []byte) bool {
 	return probe.Version > 0 && probe.Config != ""
 }
 
-// chain emits a series of messages back-to-back. Bubble Tea's Batch is
-// concurrent — for an "switch screens then deliver flash" sequence we
-// need ordering, so Sequence is the right primitive.
 func chain(cmds ...func() tea.Msg) tea.Cmd {
 	tcs := make([]tea.Cmd, len(cmds))
 	for i, c := range cmds {
@@ -183,12 +191,9 @@ func (m *Model) View() string {
 	help := components.HelpBar([]components.KeyHelp{
 		{Key: "↑↓", Label: "nav"},
 		{Key: "⏎", Label: "open / select"},
+		{Key: "/", Label: "search"},
+		{Key: "tab", Label: "filter"},
 		{Key: "esc", Label: "back"},
 	}, m.width)
-	pieces := []string{header, hint, body}
-	if m.err != "" {
-		pieces = append(pieces, lipgloss.NewStyle().Foreground(theme.Red).Render(m.err))
-	}
-	pieces = append(pieces, help)
-	return lipgloss.JoinVertical(lipgloss.Left, pieces...)
+	return lipgloss.JoinVertical(lipgloss.Left, header, hint, body, help)
 }

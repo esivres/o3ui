@@ -240,11 +240,15 @@ func (m *Model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, header, "", statusBox, "", logBox, "", help)
 }
 
+// renderProgress shows the live state: spinner, elapsed seconds, the
+// honest connection-phase pill, and the step ribbon. The old
+// percentage progress-bar was removed — openvpn3 doesn't expose a
+// real ETA, so a bar that always reached 95% in 12 seconds was
+// actively misleading on slow handshakes. The spinner is the truthful
+// "we're working" affordance; the steps below are the truthful
+// "where in the handshake we are".
 func (m *Model) renderProgress() string {
 	elapsed := time.Since(m.started)
-	pct := elapsedPct(elapsed)
-
-	pb := progressBar(m.width-32, pct, theme.Purple, theme.Pink)
 	spin := m.spinner.View()
 
 	var pillText string
@@ -261,45 +265,14 @@ func (m *Model) renderProgress() string {
 		pillBg = theme.Peach
 	}
 
-	progressLine := lipgloss.JoinHorizontal(lipgloss.Top,
-		spin, "  ", pb, "  ",
-		components.Pill(fmt.Sprintf("%d%%", pct), theme.FgBright, theme.Surface), " ",
+	elapsedStr := fmt.Sprintf("%ds elapsed", int(elapsed.Seconds()))
+	line := lipgloss.JoinHorizontal(lipgloss.Top,
+		spin, "  ",
+		theme.Dim.Render(elapsedStr), "   ",
 		components.Pill(pillText, theme.Bg, pillBg),
 	)
 
-	steps := m.renderSteps()
-
-	return progressLine + "\n" + steps
-}
-
-// elapsedPct turns elapsed time into a soft 0..95% so the bar visibly
-// progresses without ever pretending to know the real ETA.
-func elapsedPct(d time.Duration) int {
-	pct := int(d.Seconds() * 8)
-	if pct > 95 {
-		pct = 95
-	}
-	return pct
-}
-
-func progressBar(width, pct int, from, to lipgloss.Color) string {
-	if width < 4 {
-		width = 4
-	}
-	filled := width * pct / 100
-	if filled > width {
-		filled = width
-	}
-	bar := lipgloss.NewStyle().
-		Background(from).
-		Foreground(to).
-		Width(filled).
-		Render("")
-	rest := lipgloss.NewStyle().
-		Background(theme.Panel2).
-		Width(width - filled).
-		Render("")
-	return bar + rest
+	return line + "\n" + m.renderSteps()
 }
 
 func (m *Model) renderSteps() string {

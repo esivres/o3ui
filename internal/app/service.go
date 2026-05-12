@@ -71,6 +71,14 @@ func (s *Service) SessionStatistics(sessionPath string) (map[string]int64, error
 	return s.sessions.Control(sessionPath).Statistics()
 }
 
+// FetchConfig returns the raw .ovpn body openvpn3 stored when the
+// profile was imported. Surfaced on Service so callers (list detail
+// pane, export, future raw-tab viewer) don't all have to reach into
+// the ConfigBackend interface directly.
+func (s *Service) FetchConfig(configPath string) (string, error) {
+	return s.configs.Fetch(configPath)
+}
+
 // SessionLogLevel returns the current verbosity of an existing session.
 // Service-side wrapper so the TUI doesn't see the (uint32, error) shape.
 func (s *Service) SessionLogLevel(sessionPath string) (LogLevel, error) {

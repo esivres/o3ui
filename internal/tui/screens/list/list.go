@@ -14,12 +14,14 @@ import (
 	"github.com/esivres/openvpn3ui/internal/app"
 	"github.com/esivres/openvpn3ui/internal/overlay"
 	"github.com/esivres/openvpn3ui/internal/ovpn"
+	"github.com/esivres/openvpn3ui/internal/ovpnconf"
 	"github.com/esivres/openvpn3ui/internal/tui/components"
 	"github.com/esivres/openvpn3ui/internal/tui/theme"
 )
 
-// Item is a flat projection of (config + overlay + active-session-state)
-// for the list — keeps the row renderer free of D-Bus types.
+// Item is a flat projection of (config + overlay + active-session-state +
+// parsed .ovpn) for the list — keeps the row renderer free of D-Bus
+// types and of the parser package.
 type Item struct {
 	ConfigPath  string
 	Name        string
@@ -27,6 +29,15 @@ type Item struct {
 	Favorite    bool
 	HasSession  bool
 	LastUsed    time.Time
+
+	// Parsed-from-.ovpn fields. Populated lazily by parseFor and
+	// cached in Model.parsedCache so refreshes don't refetch the
+	// body from openvpn3 for every realtime event.
+	Host   string // first remote
+	Port   int
+	Proto  string // udp/tcp
+	Cipher string // primary data-channel cipher
+	Auth   string // human-readable, e.g. "cert+user/pass+TOTP"
 }
 
 // reloadMsg is fired when we want the list to refetch from the service.
@@ -44,17 +55,27 @@ type ActionMsg struct {
 	Item Item
 }
 
+// parsedFields is what we cache per config path so a noisy realtime
+// reload doesn't refetch + reparse on every D-Bus signal. The .ovpn
+// body for a given path is immutable inside openvpn3 — when it
+// changes, it changes paths (re-import gives a new D-Bus object).
+type parsedFields struct {
+	Host, Proto, Cipher, Auth string
+	Port                      int
+}
+
 // Model is the bubbletea model for the list screen.
 type Model struct {
 	svc    *app.Service
 	width  int
 	height int
 
-	items    []Item
-	cursor   int
-	loadErr  error
-	filter   string // current filter input
-	filtMode bool   // are we typing into the filter?
+	items       []Item
+	cursor      int
+	loadErr     error
+	filter      string                  // current filter input
+	filtMode    bool                    // are we typing into the filter?
+	parsedCache map[string]parsedFields // keyed by ConfigPath
 
 	// renameMode swallows printable keys and routes them into
 	// renameDraft until the user confirms with Enter or aborts with
@@ -83,7 +104,9 @@ type FlashMsg struct {
 
 type flashClearMsg struct{}
 
-func New(svc *app.Service) *Model { return &Model{svc: svc} }
+func New(svc *app.Service) *Model {
+	return &Model{svc: svc, parsedCache: map[string]parsedFields{}}
+}
 
 // HelpKeys is what the ? overlay shows for this screen. Mirrors the
 // switch in Update so the two can't drift apart silently.
@@ -137,7 +160,42 @@ func (m *Model) itemFor(c ovpn.Config, hasSess bool) Item {
 	} else {
 		_ = overlay.Overlay{} // keep import live for diff-readability
 	}
+	if p, ok := m.parseFor(c.Path); ok {
+		it.Host = p.Host
+		it.Port = p.Port
+		it.Proto = p.Proto
+		it.Cipher = p.Cipher
+		it.Auth = p.Auth
+	}
 	return it
+}
+
+// parseFor returns the .ovpn-derived fields for a config path, caching
+// across realtime reloads. Errors are swallowed — a profile that
+// openvpn3 has but whose body we can't fetch (or whose config we can't
+// parse) just shows up with empty parsed fields, the list keeps working.
+func (m *Model) parseFor(path string) (parsedFields, bool) {
+	if got, ok := m.parsedCache[path]; ok {
+		return got, true
+	}
+	body, err := m.svc.FetchConfig(path)
+	if err != nil {
+		return parsedFields{}, false
+	}
+	prof, err := ovpnconf.ParseString(body)
+	if err != nil || prof == nil {
+		return parsedFields{}, false
+	}
+	r := prof.PrimaryRemote()
+	got := parsedFields{
+		Host:   r.Host,
+		Port:   r.Port,
+		Proto:  strings.ToLower(r.Proto),
+		Cipher: prof.Cipher,
+		Auth:   prof.AuthMethod(),
+	}
+	m.parsedCache[path] = got
+	return got, true
 }
 
 // SetSize is called by the root model on every WindowSizeMsg.
@@ -192,6 +250,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ovpn.SessionCreatedEvent, ovpn.SessionDestroyedEvent,
 		ovpn.ConfigCreatedEvent, ovpn.ConfigDestroyedEvent,
 		ovpn.StatusChangeEvent:
+		// Drop cached parsed-config entries for paths that no longer
+		// exist after the event — keeps the cache from holding stale
+		// data after a delete + import-with-same-name dance.
+		if ev, ok := msg.(ovpn.ConfigDestroyedEvent); ok {
+			delete(m.parsedCache, ev.Path)
+		}
 		return m, m.loadCmd()
 
 	case FlashMsg:
@@ -382,8 +446,9 @@ func (m *Model) visible() []int {
 	}
 	needle := strings.ToLower(m.filter)
 	var out []int
-	for i, it := range m.items {
-		if strings.Contains(strings.ToLower(it.Name), needle) {
+	// Index-based — Item is ~152B now that parsed fields landed.
+	for i := range m.items {
+		if strings.Contains(strings.ToLower(m.items[i].Name), needle) {
 			out = append(out, i)
 		}
 	}
@@ -662,11 +727,22 @@ func (m *Model) renderRow(idx int, it Item, selected bool) string {
 		padRight(favGlyph, cols.fav) + " " +
 		name
 
+	authCell := "—"
+	if it.Auth != "" {
+		// Compress to keep the column tight: "cert+user/pass+TOTP"
+		// becomes "C+U+T" in the table view; the full string lives
+		// in the detail pane on the right.
+		authCell = shortAuth(it.Auth)
+	}
+	protoCell := "—"
+	if it.Proto != "" {
+		protoCell = strings.ToUpper(it.Proto)
+	}
 	if cols.auth > 0 {
-		row += padRight("—", cols.auth)
+		row += padRight(truncateWidth(authCell, cols.auth), cols.auth)
 	}
 	if cols.proto > 0 {
-		row += padRight("—", cols.proto)
+		row += padRight(truncateWidth(protoCell, cols.proto), cols.proto)
 	}
 
 	last := relTime(it.LastUsed)
@@ -776,11 +852,31 @@ func (m *Model) renderDetailBox(width, height int) string {
 	if o, ok := m.svc.GetOverlay(it.ConfigPath); ok {
 		auto = o.AutoConnect
 	}
+	host := theme.Subtle.Render("—")
+	if it.Host != "" {
+		host = theme.AccentCyan.Render(it.Host)
+		if it.Port > 0 {
+			host += theme.Dim.Render(fmt.Sprintf(":%d", it.Port))
+		}
+	}
+	proto := theme.Subtle.Render("—")
+	if it.Proto != "" {
+		proto = theme.Dim.Render(strings.ToUpper(it.Proto))
+	}
+	cipher := theme.Subtle.Render("—")
+	if it.Cipher != "" {
+		cipher = theme.Dim.Render(it.Cipher)
+	}
+	auth := theme.Subtle.Render("—")
+	if it.Auth != "" {
+		auth = theme.AccentPink.Render(it.Auth)
+	}
 	rows := []string{
 		kv("status", statusText(*it)),
-		kv("host", theme.Subtle.Render("—")),
-		kv("cipher", theme.Subtle.Render("—")),
-		kv("auth", theme.Subtle.Render("—")),
+		kv("host", host),
+		kv("proto", proto),
+		kv("cipher", cipher),
+		kv("auth", auth),
 		kv("country", or(it.CountryCode, theme.Subtle.Render("—"))),
 		kv("favorite", boolMark(it.Favorite)),
 		kv("auto", boolMark(auto)),
@@ -802,8 +898,9 @@ func (m *Model) renderDetailBox(width, height int) string {
 // the placeholder "● running" badge that shipped in the first cut.
 func (m *Model) headerPills() []string {
 	active := 0
-	for _, it := range m.items {
-		if it.HasSession {
+	// Index-based — Item is ~152B; reading one bool doesn't justify the copy.
+	for i := range m.items {
+		if m.items[i].HasSession {
 			active++
 		}
 	}
@@ -847,6 +944,34 @@ func or(s, fallback string) string {
 		return fallback
 	}
 	return s
+}
+
+// shortAuth compresses Profile.AuthMethod() so it fits the AUTH
+// column. "cert+user/pass+TOTP" → "C+U+T"; "anonymous" → "anon".
+func shortAuth(s string) string {
+	switch s {
+	case "anonymous":
+		return "anon"
+	case "":
+		return "—"
+	}
+	parts := strings.Split(s, "+")
+	short := make([]string, 0, len(parts))
+	for _, p := range parts {
+		switch p {
+		case "cert":
+			short = append(short, "C")
+		case "user/pass":
+			short = append(short, "U")
+		case "TOTP":
+			short = append(short, "T")
+		default:
+			if len(p) > 0 {
+				short = append(short, strings.ToUpper(p[:1]))
+			}
+		}
+	}
+	return strings.Join(short, "+")
 }
 
 // relTime mirrors the design's "2h ago / yesterday / 3d ago / never" tags.

@@ -185,7 +185,9 @@ func (m *Root) handleListAction(a list.ActionMsg) (tea.Model, tea.Cmd) {
 		return m, next.Init()
 	case "export":
 		return m, m.exportProfile(a.Item.ConfigPath, a.Item.Name)
-	case "import-portable":
+	case "import":
+		// One filepicker screen, two formats — sniffs by content
+		// (.ovpn vs .o3ui.json), dispatches accordingly.
 		next := importportable.New(m.svc)
 		next.SetSize(m.width, m.height)
 		m.current = next
@@ -369,9 +371,8 @@ func (m *Root) renderHelpOverlay(base string) string {
 			components.KeyHelp{Key: "d", Label: "disconnect active"},
 			components.KeyHelp{Key: "e", Label: "edit profile"},
 			components.KeyHelp{Key: "f", Label: "toggle favorite"},
-			components.KeyHelp{Key: "i", Label: "import .ovpn"},
+			components.KeyHelp{Key: "i", Label: "import (.ovpn / .o3ui.json)"},
 			components.KeyHelp{Key: "X", Label: "export profile → JSON"},
-			components.KeyHelp{Key: "J", Label: "import portable JSON"},
 			components.KeyHelp{Key: ",", Label: "settings"},
 			components.KeyHelp{Key: "r", Label: "reload"},
 		)

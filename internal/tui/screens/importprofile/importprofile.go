@@ -1,14 +1,21 @@
-// Package importprofile is a single-screen UI for picking a portable
-// `.o3ui.json` bundle off disk and feeding it to Service.ImportPortable.
-// Mirrors the OTP import screen's filepicker pattern at a smaller scale
-// — no tabs, no manual-entry fallback. Errors and successes leave the
-// screen with BackMsg + FlashMsg so the list view shows the outcome.
+// Package importprofile is a single-screen UI for picking a profile
+// off disk. Accepts two formats and sniffs by content:
+//
+//   - portable `.o3ui.json` bundle  → Service.ImportPortable
+//     (round-trip with overlay + credentials + TOTP secret)
+//   - raw `.ovpn` / `.conf` config  → Service.ImportFromFile
+//     (the classic openvpn3 config-import flow)
+//
+// One screen, two file types — the user shouldn't have to remember
+// which key opens which import flow.
 package importprofile
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/filepicker"
 	tea "github.com/charmbracelet/bubbletea"
@@ -80,38 +87,63 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// consume reads the file, decodes the portable bundle, and hands it to
-// Service.ImportPortable. Whatever happens, we leave the screen — the
-// list view picks up the outcome through FlashMsg, which Root drops in
-// after switching screens.
+// consume reads the file, sniffs the format, and dispatches to the
+// right importer. We leave the screen regardless of outcome — the
+// list view picks up the result via FlashMsg.
+//
+// Sniffing rules:
+//   - JSON with `"version"` and `"config"` keys → portable bundle.
+//   - anything else → raw .ovpn body (openvpn3's importer accepts
+//     any text and will mark it invalid if it isn't a config).
 func (m *Model) consume(path string) tea.Cmd {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return chain(
-			func() tea.Msg { return BackMsg{} },
-			func() tea.Msg { return list.FlashMsg{Text: "read failed: " + err.Error(), IsError: true} },
-		)
+		return backWithFlash("read failed: "+err.Error(), true)
 	}
-	p, err := app.UnmarshalPortable(data)
-	if err != nil {
-		return chain(
-			func() tea.Msg { return BackMsg{} },
-			func() tea.Msg { return list.FlashMsg{Text: "invalid bundle: " + err.Error(), IsError: true} },
-		)
+	if isPortableBundle(data) {
+		p, err := app.UnmarshalPortable(data)
+		if err != nil {
+			return backWithFlash("invalid bundle: "+err.Error(), true)
+		}
+		if _, err := m.svc.ImportPortable(p); err != nil {
+			return backWithFlash("import failed: "+err.Error(), true)
+		}
+		return backWithFlash(fmt.Sprintf("✓ imported %s (portable)", p.Name), false)
 	}
-	newPath, err := m.svc.ImportPortable(p)
-	if err != nil {
-		return chain(
-			func() tea.Msg { return BackMsg{} },
-			func() tea.Msg { return list.FlashMsg{Text: "import failed: " + err.Error(), IsError: true} },
-		)
+	// Raw .ovpn — derive a profile name from the filename, sans ext.
+	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if name == "" {
+		name = "imported"
 	}
-	msg := fmt.Sprintf("✓ imported %s", p.Name)
-	_ = newPath
+	if _, err := m.svc.ImportFromFile(name, path); err != nil {
+		return backWithFlash("import failed: "+err.Error(), true)
+	}
+	return backWithFlash(fmt.Sprintf("✓ imported %s (.ovpn)", name), false)
+}
+
+func backWithFlash(text string, isErr bool) tea.Cmd {
 	return chain(
 		func() tea.Msg { return BackMsg{} },
-		func() tea.Msg { return list.FlashMsg{Text: msg} },
+		func() tea.Msg { return list.FlashMsg{Text: text, IsError: isErr} },
 	)
+}
+
+// isPortableBundle does a fast structural sniff without committing to
+// a full parse — JSON files that aren't our bundle should fall through
+// to the raw-ovpn path instead of raising "missing version" errors.
+func isPortableBundle(data []byte) bool {
+	trimmed := strings.TrimLeft(string(data), " \t\r\n")
+	if !strings.HasPrefix(trimmed, "{") {
+		return false
+	}
+	var probe struct {
+		Version int    `json:"version"`
+		Config  string `json:"config"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	return probe.Version > 0 && probe.Config != ""
 }
 
 // chain emits a series of messages back-to-back. Bubble Tea's Batch is
@@ -130,9 +162,9 @@ func (m *Model) View() string {
 		return "loading…"
 	}
 	header := components.HeaderBar("ovpn3", "import profile",
-		[]string{components.Pill("portable", theme.Pink, theme.PinkSoft)}, m.width)
+		[]string{components.Pill(".ovpn / .o3ui.json", theme.Pink, theme.PinkSoft)}, m.width)
 	hint := lipgloss.NewStyle().Foreground(theme.FgDim).Render(
-		"pick a .o3ui.json bundle — credentials and TOTP secret will be restored to the keyring.")
+		"pick a raw .ovpn config or a .o3ui.json portable bundle — format detected automatically.")
 	body := components.Box{
 		Title:       theme.AccentPink.Render("› ") + "files",
 		Content:     m.picker.View(),

@@ -224,11 +224,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// deliberate Shift to hit. Lowercase x is reserved for
 			// future "remove" semantics in the same spirit.
 			return m, m.emitCmd("export")
-		case "J":
-			// Companion to X — import a portable profile bundle.
-			// Capital J for parity (Shift on both halves of the
-			// round-trip), avoiding `i` which is the raw .ovpn import.
-			return m, func() tea.Msg { return ActionMsg{Kind: "import-portable"} }
 		case "s":
 			return m, m.emitCmd("stats")
 		case ",":

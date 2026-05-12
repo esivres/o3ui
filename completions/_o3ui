@@ -1,0 +1,41 @@
+#compdef o3ui
+# zsh completion for o3ui. Installed by the .deb to
+# /usr/share/zsh/vendor-completions/_o3ui; loaded automatically by
+# zsh's compinit on shells that have completions enabled.
+
+_o3ui() {
+    local -a subcommands
+    subcommands=(
+        'status:print active session (one line or --json)'
+        'list:list imported profiles'
+        'connect:start the VPN for a profile (substring match)'
+        'disconnect:tear down the active session'
+        'desklet:install / uninstall / locate the Cinnamon desklet'
+        'help:usage'
+    )
+
+    if (( CURRENT == 2 )); then
+        _describe 'command' subcommands
+        return
+    fi
+
+    case "$words[2]" in
+    status|list)
+        _arguments '--json[machine-readable JSON]' '-j[machine-readable JSON]'
+        ;;
+    desklet)
+        local -a actions
+        actions=(
+            'install:copy the desklet into ~/.local/share/cinnamon/desklets'
+            'uninstall:remove the desklet'
+            'where:print the install directory'
+        )
+        _describe 'desklet action' actions
+        ;;
+    connect|disconnect)
+        # Substring match on the server side — no completion needed.
+        ;;
+    esac
+}
+
+_o3ui "$@"

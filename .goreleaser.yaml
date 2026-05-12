@@ -58,6 +58,22 @@ nfpms:
     recommends:
       - cinnamon
       - libsecret-1-0
+    contents:
+      # Shell completions — installed into the standard vendor dirs
+      # so bash-completion / zsh's compinit / fish pick them up on
+      # next shell start with no user action needed.
+      - src: completions/o3ui.bash
+        dst: /usr/share/bash-completion/completions/o3ui
+        file_info:
+          mode: 0644
+      - src: completions/_o3ui
+        dst: /usr/share/zsh/vendor-completions/_o3ui
+        file_info:
+          mode: 0644
+      - src: completions/o3ui.fish
+        dst: /usr/share/fish/vendor_completions.d/o3ui.fish
+        file_info:
+          mode: 0644
     deb:
       compression: zstd
 

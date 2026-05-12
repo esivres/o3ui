@@ -3,81 +3,111 @@
 Active issues and follow-ups, by priority. Items move out of here into
 git history when fixed.
 
-## #0 — авторский надзор от дизайнера
+## Sprint 2 — следующий рывок (по UX-ревью)
 
-- [ ] **Designer review pass over the live TUI.** The screens were
-      implemented from the static handoff bundle without round-trip
-      review. Several details (border weights, colour balance against
-      the user's terminal palette, table column proportions, status
-      pill density, footer copy) drifted from intent and need a real
-      look from the designer at a running terminal. Before further
-      polish — schedule this and treat the resulting notes as the
-      source of truth for the visual section below.
+- [ ] **`.ovpn` parsing → list detail pane.** Parser живёт в
+      `internal/ovpnconf`, `Service.ImportFromFile` уже знает тело.
+      Распарсить на import, сложить host/proto/cipher/auth в overlay
+      (новые колонки), surface через `Service.GetOverlay`. После этого
+      правая панель в list перестаёт быть прочерками.
+- [ ] **Edit: вернуть tab-bar с реально работающими вкладками.** Не
+      возвращать пустые табы — только то, что несёт контент.
+      Минимум:
+      - **general** — имя (rename), country, favorite/auto-connect
+        тоггл-чекбоксы, parsed `.ovpn`-поля (host/proto/cipher) из
+        overlay. Консолидирует то что сейчас раскидано по
+        хоткеям `R / f / `,` `.
+      - **authentication** — текущий контент (creds + OTP).
+      - **raw .ovpn** — read-only viewport, `Service.configs.Fetch`
+        через bubbles/viewport. Полезно для debug-а конфига.
+      `network / advanced` — отложены до спринта 4+, пока не выяснили
+      какие per-config properties openvpn3 D-Bus реально отдаёт.
+- [ ] **Settings: about-таб.** Version (мы прокидываем `-X
+      main.version`/commit/date в ldflags), license, ссылка на
+      github. ~10 строк, мгновенный win. `connection/general/network`
+      пока пустые — не возвращать.
+- [ ] **Убрать прогресс-бар на connecting.** Сейчас `elapsedPct`
+      врёт юзеру: бар доезжает до 95% за 12с независимо от того что
+      делает openvpn3. Оставить только spinner + step-индикаторы
+      session/auth/tunnel — они честные.
+- [ ] **Удалить дублирующие inline OTP-modes из edit** (`m` manual,
+      `g` qr-path, modeEnterURI). Оставить только `i` → otpimport
+      screen. Удаляет ~80 строк фрагментированной логики.
+- [ ] **Modal auth поверх suspended screen**, а не fullscreen
+      replace. Сейчас фон auth-modal затирает connecting-экран
+      целиком — пользователь теряет контекст, кажется будто
+      приложение перезапустилось.
+- [ ] **Q vs q в list при активной сессии.** `q` мгновенно выходит
+      даже если есть active tunnel. Использовать новый
+      `components.ConfirmModal` для предупреждения, либо `Q` (Shift)
+      для quit, `q` — no-op в list.
 
-## TUI — visual / layout
+## Sprint 3 — wow-фичи
 
-- [ ] **Profile list box border barely visible.** Tried `theme.BorderLt`,
-      still washed out for the user's terminal palette. Needs a brighter
-      colour or a different border style — pick after testing on Mint
-      defaults.
-- [ ] **Header row sometimes clipped on narrow / short terminals.**
-      Even with the `MaxHeight(bodyH)` clip on the body, certain
-      terminal sizes still chop the top "ovpn3 / profiles" strip.
-      Likely a +1 row miscount somewhere — or the terminal reports
-      a smaller height than tea sees. Reproduce + measure
-      `lipgloss.Height` of each piece.
-- [ ] **Footer wraps awkwardly at ~80 columns.** Even after shortening
-      labels (`nav`, `go`, `off`, `↻`), the bar still spills onto two
-      lines. Either accept it gracefully or implement a `?` overlay
-      with the full key list and shrink the always-visible bar to
-      essentials.
-- [ ] **Star (★) misaligns when the row is very long.** Truncation
-      now keeps it inside `cols.name`, but on the boundary case the
-      star can land on a different column than the AUTH header. Add
-      a unit-style render test to lock in the geometry.
+- [ ] **Live D-Bus log на Connecting screen.** Subscribe per-session
+      `Log` signal (после `LogForward(true)`). Ring buffer на 10
+      последних строк, авто-скролл, цветовые tag'и. Закрывает
+      последнюю причину держать `openvpn3` CLI открытым параллельно.
+- [ ] **Command palette `:` / `Ctrl+P`** с fuzzy-поиском по
+      командам текущего экрана и всем профилям. `:conn farzoom<⏎>`
+      коннектит. Игра-чейнджер для discoverability — gh dash /
+      lazygit / vscode идиома.
+- [ ] **Big-font ASCII TOTP preview** в edit-screen (figlet-style
+      6-digit code занимает половину высоты box-а вместо мелких
+      цифр в углу). ~50 строк rune-art.
+- [ ] **Diagnostic next-steps на FailedMsg.** Парсить openvpn3
+      error и предлагать действие: `AUTH_FAILED → press u/p to fix
+      credentials`, `TLS handshake → check time skew / cert`,
+      `Network unreachable → check internet`. Каждый mapping ≈ 2-3
+      строки — приложение начинает «понимать».
+- [ ] **Settings: connection-таб.** Дефолты подключения
+      (auto-reconnect, дефолт log verbosity), когда auto-connect
+      runner подключим.
 
-## TUI — features
+## Sprint 4 — уют (можно отложить)
 
-- [ ] **`.ovpn` parsing on import** — fill the AUTH/PROTO/CIPHER
-      columns and the right-pane host/cipher/auth fields. We have the
-      parser (`internal/ovpnconf`) and the body at import time; just
-      need to wire results into overlay (new columns) and surface in
-      `Service.GetOverlay`.
-- [ ] **Live D-Bus log on Connecting screen.** Subscribe to per-session
-      `Log` signal (after calling `LogForward(true)`). Replace the
-      current static "waiting…" placeholder with a real scroll buffer.
-- [ ] **Edit screen tabs are decorative.** `general / network /
-      advanced / raw .ovpn` show but don't render anything. Either
-      hide them until they work, or implement the `raw .ovpn` viewer
-      (read-only) using openvpn3's `Fetch` — least invasive starting
-      point.
-- [ ] **Settings: backend service `restart`.** Action shown but not
-      wired. Decide policy (admin / requires polkit) and either
-      implement or remove the column.
-- [ ] **Public IP / latency** on Connected screen — currently "—".
-      Probe via HTTPS to a known host through the tun.
-- [ ] **Auto-connect on login** — overlay flag exists, no runner.
-      Needs a tiny systemd-user-service template + bin entrypoint.
+- [ ] **Public IP / latency** на Connected screen — currently «—».
+      Probe через HTTPS к известному хосту через tun.
+- [ ] **Auto-connect on login** — overlay-флаг есть, нет runner-а.
+      Нужен systemd-user-service template + bin entrypoint.
+- [ ] **Session history per profile** — ring buffer в overlay
+      (последние 10 attempts: timestamp, duration, status, bytes).
+      Показать в right pane как timeline.
+- [ ] **Delete profile из TUI** (`D` с confirm). Сейчас только
+      через `openvpn3 config-remove`.
+- [ ] **`0..9` quick-jump на list** — выпрыгнуть на строку N.
+      `[N]` индексы уже отрисованы — намёк, который надо закрыть.
+- [ ] **Mouse-support** (`tea.WithMouseAllMotion`) — scroll,
+      click на табы/строки. Одна строка, ощутимо для десктопа.
+- [ ] **`edit:network / advanced`-табы** — нужна разведка
+      openvpn3 D-Bus per-config properties API.
+- [ ] **`settings:network`** — DNS/routing глобалы, если openvpn3
+      такое экспортирует.
 
-## TUI — UX nits
+## TUI — visual / layout (отложенные дизайнерские)
 
-- [ ] **`?` help overlay** with full key reference. The footer carries
-      shortcuts; a deeper modal is more discoverable.
-- [ ] **`.local` flag on the row** when a config is single-use vs.
-      persistent — currently no visual distinction.
-- [ ] **Status pill in HeaderBar** could include device name when
-      connected (`tun0` / `wg0`) instead of just count.
+- [ ] **Profile list box border barely visible.** Пробовали
+      `theme.BorderLt`, всё ещё washed out на некоторых терминалах.
+      Нужен brighter colour или другой border style — выбирать на
+      Mint defaults.
+- [ ] **Header row clipped на узких терминалах.** Reproduce +
+      измерить `lipgloss.Height` каждой части.
+- [ ] **Footer wraps на ~80 cols.** Частично закрыто `?`-overlay
+      + ужатым footer'ом, но wide-glyph `↑↓ ⏎` всё ещё риск.
 
 ## Backend
 
-- [ ] **GORM + gorm-gen migration** for `internal/overlay` — task #24
-      in the task tracker. Defer until schema settles further.
-- [ ] **Webcam QR import** (was skipped during the OTP screen build).
-      Not in the v1 ship target; revisit when there's a real demand.
-- [ ] **TUI gracefully degrade on missing keyring.** Right now
-      `secrets.New()` happily Opens but Set/Get may fail per call;
-      surface a friendly "keyring locked" message in the Auth modal.
+- [ ] **TUI gracefully degrade on missing keyring.** Сейчас
+      `secrets.New()` тихо Open-ится, но Set/Get падает per call;
+      surface friendly "keyring locked" в Auth modal.
+- [ ] **GORM + gorm-gen migration** для `internal/overlay` —
+      отложено, пока схема ещё двигается.
+- [ ] **Webcam QR import** — был skipped при OTP screen build.
+      Не в v1, revisit когда будет запрос.
+- [ ] **Settings: backend service `restart` action.** Кнопка
+      показывается, не подключена. Нужна policy decision —
+      требует polkit; либо реализовать, либо убрать колонку.
 
-## Done — link to commits when we cut them
+## Done — moved into git history
 
 Items finalised (and removed from this list) live in git history.

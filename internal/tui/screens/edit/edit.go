@@ -450,8 +450,8 @@ func (m *Model) renderSidebar(w int) string {
 		label string
 	}{
 		{tabGeneral, "1", "general"},
-		{tabAuth, "2", "authentication"},
-		{tabRaw, "3", "raw .ovpn"},
+		{tabAuth, "2", "auth"},
+		{tabRaw, "3", "raw"},
 	}
 	var rows []string
 	for _, t := range tabs {

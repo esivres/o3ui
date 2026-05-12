@@ -217,7 +217,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "e":
 			return m, m.emitCmd("edit")
 		case "i":
-			return m, m.emitCmd("import")
+			// Import doesn't act on the current row — it opens a
+			// filepicker. Must fire even on an empty profile list,
+			// so we bypass emitCmd's "needs a selection" guard.
+			return m, func() tea.Msg { return ActionMsg{Kind: "import"} }
 		case "X":
 			// Capital X — destructive in spirit (writes a file
 			// containing credentials), so we want a key that needs

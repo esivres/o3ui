@@ -59,10 +59,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      # Pin the action and golangci-lint to v2.x — our .golangci.yml uses
-      # the v2 schema (`version: "2"`), and the action's `latest` tag still
-      # resolves to v1.64 which can't read it and doesn't know Go 1.26.
+      # Pin the action and golangci-lint to a release that knows about
+      # the v2 config schema *and* is built with a Go ≥ go.mod's
+      # directive. modernc.org/sqlite drags us up to 1.25; v2.1.6 was
+      # built with 1.24 and refuses to load the config. v2.12.x is the
+      # latest line that's still compatible with our setup.
       - uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.1.6
+          version: v2.12.2
           args: --timeout=5m

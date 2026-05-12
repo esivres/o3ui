@@ -34,6 +34,15 @@ type Model struct {
 	remember bool
 }
 
+// HelpKeys feeds the `?` overlay.
+func (m *Model) HelpKeys() []components.KeyHelp {
+	return []components.KeyHelp{
+		{Key: "enter", Label: "submit the answer"},
+		{Key: "tab", Label: "toggle remember"},
+		{Key: "esc", Label: "cancel"},
+	}
+}
+
 func New(configName string, p ovpn.InputPrompt) *Model {
 	ti := textinput.New()
 	ti.CharLimit = 256

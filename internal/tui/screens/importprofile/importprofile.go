@@ -56,6 +56,15 @@ func New(svc *app.Service) *Model {
 
 func (m *Model) Init() tea.Cmd { return m.picker.Init() }
 
+// HelpKeys feeds the `?` overlay.
+func (m *Model) HelpKeys() []components.KeyHelp {
+	return []components.KeyHelp{
+		{Key: "↑↓", Label: "browse files"},
+		{Key: "enter", Label: "open directory or import selected file"},
+		{Key: "esc", Label: "back"},
+	}
+}
+
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	ph := h - 10

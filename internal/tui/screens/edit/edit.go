@@ -80,6 +80,20 @@ func New(svc *app.Service, configPath, configName string) *Model {
 
 func (m *Model) Init() tea.Cmd { return tick() }
 
+// HelpKeys feeds the `?` overlay. Mirrors the helpbar at the bottom
+// of the screen but stays exhaustive — overlay is for discovery,
+// footer for muscle memory.
+func (m *Model) HelpKeys() []components.KeyHelp {
+	return []components.KeyHelp{
+		{Key: "u", Label: "edit / set username"},
+		{Key: "p", Label: "edit / set password"},
+		{Key: "d", Label: "clear saved credentials"},
+		{Key: "i", Label: "open OTP import screen"},
+		{Key: "x", Label: "remove the TOTP secret"},
+		{Key: "q / esc", Label: "back to the profile list"},
+	}
+}
+
 func (m *Model) SetSize(w, h int) { m.width, m.height = w, h }
 
 func tick() tea.Cmd {
@@ -332,40 +346,14 @@ func (m *Model) View() string {
 		[]string{components.Pill(shortPath(m.cfgPath), theme.FgDim, theme.Panel2)},
 		m.width,
 	)
-	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		m.renderSidebar(), "  ",
-		lipgloss.NewStyle().Width(m.width-24).Render(m.renderRight()),
-	)
+	// The decorative 5-tab sidebar (general / network / advanced /
+	// raw .ovpn) is gone — only the authentication tab actually does
+	// anything, so a sidebar made up of dead controls actively
+	// undermined trust. When more tabs land we'll bring it back with
+	// real wiring; for now the screen uses the full width.
+	body := lipgloss.NewStyle().Width(m.width - 4).Render(m.renderRight())
 	help := components.HelpBar(m.helpKeys(), m.width)
 	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", help)
-}
-
-func (m *Model) renderSidebar() string {
-	tabs := []struct {
-		label  string
-		active bool
-	}{
-		{"general", false},
-		{"authentication", true},
-		{"network", false},
-		{"advanced", false},
-		{"raw .ovpn", false},
-	}
-	var rows []string
-	for _, t := range tabs {
-		var row string
-		if t.active {
-			row = theme.AccentPink.Render("▎") + " " + theme.Bright.Render(t.label)
-		} else {
-			row = "  " + theme.Dim.Render(t.label)
-		}
-		rows = append(rows, row)
-	}
-	box := components.Box{
-		Content: strings.Join(rows, "\n"),
-		Width:   22,
-	}.Render()
-	return box
 }
 
 func (m *Model) renderRight() string {

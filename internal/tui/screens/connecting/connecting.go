@@ -79,6 +79,14 @@ func New(svc *app.Service, configPath, configName string) *Model {
 	}
 }
 
+// HelpKeys feeds the `?` overlay. The connecting screen owns one
+// thing: cancel the attempt.
+func (m *Model) HelpKeys() []components.KeyHelp {
+	return []components.KeyHelp{
+		{Key: "esc", Label: "cancel the connect attempt"},
+	}
+}
+
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(m.connectCmd(), m.spinner.Tick, statusTick())
 }

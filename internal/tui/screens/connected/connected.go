@@ -42,6 +42,14 @@ func New(svc *app.Service, sessionPath string) *Model {
 
 func (m *Model) Init() tea.Cmd { return tick() }
 
+// HelpKeys feeds the `?` overlay.
+func (m *Model) HelpKeys() []components.KeyHelp {
+	return []components.KeyHelp{
+		{Key: "d", Label: "disconnect this session"},
+		{Key: "q / esc", Label: "hide (tunnel stays up)"},
+	}
+}
+
 func (m *Model) SetSize(w, h int) { m.width, m.height = w, h }
 
 func tick() tea.Cmd {

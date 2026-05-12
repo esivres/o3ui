@@ -66,6 +66,17 @@ type Model struct {
 	flashOK       string
 }
 
+// HelpKeys feeds the `?` overlay. Three-tab layout — the active tab
+// changes which keys matter; we show them all so the user can see
+// what each tab offers without having to switch.
+func (m *Model) HelpKeys() []components.KeyHelp {
+	return []components.KeyHelp{
+		{Key: "tab", Label: "switch tab (URI / QR / Manual)"},
+		{Key: "enter", Label: "import (URI/manual) · open dir or pick file (QR)"},
+		{Key: "esc", Label: "back"},
+	}
+}
+
 func New(svc *app.Service, configPath, configName string) *Model {
 	uri := textinput.New()
 	uri.CharLimit = 4096

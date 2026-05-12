@@ -35,6 +35,15 @@ type Model struct {
 
 func New(svc *app.Service) *Model { return &Model{svc: svc} }
 
+// HelpKeys feeds the `?` overlay.
+func (m *Model) HelpKeys() []components.KeyHelp {
+	return []components.KeyHelp{
+		{Key: "1–6", Label: "log verbosity for new sessions"},
+		{Key: "r", Label: "refresh backend services"},
+		{Key: "q / esc", Label: "back"},
+	}
+}
+
 func (m *Model) Init() tea.Cmd { return tea.Batch(m.refresh(), tick()) }
 
 func (m *Model) SetSize(w, h int) { m.width, m.height = w, h }
@@ -97,8 +106,10 @@ func (m *Model) View() string {
 	)
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		m.renderSidebar(), "  ",
-		lipgloss.NewStyle().Width(m.width-24).Render(m.renderRight()),
+		// Decorative 5-tab sidebar removed (only 'dbus & backend'
+		// was real). When connection/network/about land we'll bring
+		// it back with working entries. Full width for now.
+		lipgloss.NewStyle().Width(m.width-4).Render(m.renderRight()),
 	)
 	help := components.HelpBar([]components.KeyHelp{
 		{Key: "1-6", Label: "log level"},
@@ -106,31 +117,6 @@ func (m *Model) View() string {
 		{Key: "q/esc", Label: "back"},
 	}, m.width)
 	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", help)
-}
-
-func (m *Model) renderSidebar() string {
-	tabs := []struct {
-		label  string
-		active bool
-	}{
-		{"general", false},
-		{"connection", false},
-		{"network", false},
-		{"dbus & backend", true},
-		{"about", false},
-	}
-	var rows []string
-	for _, t := range tabs {
-		if t.active {
-			rows = append(rows, theme.AccentPink.Render("▎")+" "+theme.Bright.Render(t.label))
-		} else {
-			rows = append(rows, "  "+theme.Dim.Render(t.label))
-		}
-	}
-	return components.Box{
-		Content: strings.Join(rows, "\n"),
-		Width:   22,
-	}.Render()
 }
 
 func (m *Model) renderRight() string {

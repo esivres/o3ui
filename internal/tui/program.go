@@ -49,6 +49,18 @@ type Root struct {
 	// reference card on top of the current screen — no FSM transition,
 	// the underlying screen keeps running underneath.
 	helpOverlay bool
+
+	// pendingConfirm is the y/N modal state for destructive actions.
+	// Until the user picks, all key input (except y/n/esc) is
+	// swallowed; on `y` the saved Cmd fires.
+	pendingConfirm *confirmRequest
+}
+
+// confirmRequest captures the text shown in the modal plus the Cmd to
+// run on `y`. Cancellation just clears the request.
+type confirmRequest struct {
+	modal components.ConfirmModal
+	onYes tea.Cmd
 }
 
 func NewRoot(svc *app.Service) *Root {
@@ -79,6 +91,18 @@ func (m *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Any key while overlay is shown closes it. Cheap and
 			// discoverable — no need to remember the toggle key.
 			m.helpOverlay = false
+			return m, nil
+		}
+		if m.pendingConfirm != nil {
+			switch msg.String() {
+			case "y", "Y", "enter":
+				cmd := m.pendingConfirm.onYes
+				m.pendingConfirm = nil
+				return m, cmd
+			case "n", "N", "esc", "q":
+				m.pendingConfirm = nil
+				return m, nil
+			}
 			return m, nil
 		}
 	}
@@ -145,17 +169,31 @@ func (m *Root) handleListAction(a list.ActionMsg) (tea.Model, tea.Cmd) {
 		m.current = next
 		return m, next.Init()
 	case "disconnect":
-		// Find the active session path and tear it down. Then refresh list.
-		// Index-based range avoids copying each Session (~128 bytes).
-		if sessions, err := m.svc.ActiveSessions(); err == nil {
-			for i := range sessions {
-				if sessions[i].ConfigPath == a.Item.ConfigPath {
-					_ = m.svc.Disconnect(sessions[i].Path)
-					break
+		// Gate behind a y/N — `d` mashed by mistake on the active row
+		// should not tear the tunnel down. The actual disconnect lives
+		// in the onYes Cmd so it only runs after explicit confirmation.
+		cfgPath := a.Item.ConfigPath
+		name := a.Item.Name
+		m.pendingConfirm = &confirmRequest{
+			modal: components.ConfirmModal{
+				Title:    "Disconnect " + name + "?",
+				Body:     "The VPN tunnel will be torn down immediately.",
+				YesLabel: "Disconnect",
+				Danger:   true,
+			},
+			onYes: func() tea.Msg {
+				if sessions, err := m.svc.ActiveSessions(); err == nil {
+					for i := range sessions {
+						if sessions[i].ConfigPath == cfgPath {
+							_ = m.svc.Disconnect(sessions[i].Path)
+							break
+						}
+					}
 				}
-			}
+				return list.FlashMsg{Text: "● disconnected · " + name}
+			},
 		}
-		return m.gotoList()
+		return m, nil
 	case "view":
 		// Re-enter the Connected screen for an existing live session
 		// — useful after the user dismissed it with q/esc but the
@@ -184,7 +222,22 @@ func (m *Root) handleListAction(a list.ActionMsg) (tea.Model, tea.Cmd) {
 		m.current = next
 		return m, next.Init()
 	case "export":
-		return m, m.exportProfile(a.Item.ConfigPath, a.Item.Name)
+		// Export writes the user's TOTP secret and password in
+		// plaintext to a file. The y/N gate makes that consequence
+		// visible at least once per session instead of dropping the
+		// file silently on a single keystroke.
+		cfgPath := a.Item.ConfigPath
+		name := a.Item.Name
+		m.pendingConfirm = &confirmRequest{
+			modal: components.ConfirmModal{
+				Title:    "Export " + name + "?",
+				Body:     "Writes ~/" + name + ".o3ui.json (mode 0600) including TOTP secret and saved password in plaintext. Suitable for moving the profile to another machine; not for sharing.",
+				YesLabel: "Export",
+				Danger:   true,
+			},
+			onYes: m.exportProfile(cfgPath, name),
+		}
+		return m, nil
 	case "import":
 		// One filepicker screen, two formats — sniffs by content
 		// (.ovpn vs .o3ui.json), dispatches accordingly.
@@ -336,6 +389,13 @@ func contains(s, sub string) bool {
 
 func (m *Root) View() string {
 	base := m.current.View()
+	if m.pendingConfirm != nil {
+		card := m.pendingConfirm.modal.Render(m.width)
+		if m.width == 0 || m.height == 0 {
+			return card
+		}
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, card)
+	}
 	if !m.helpOverlay {
 		return base
 	}
@@ -353,9 +413,16 @@ func (m *Root) isModalActive() bool {
 	return false
 }
 
+// HelpKeyProvider lets a screen contribute its own keymap to the `?`
+// overlay. Optional — Root falls back to a global-only list when the
+// current screen doesn't implement it.
+type HelpKeyProvider interface {
+	HelpKeys() []components.KeyHelp
+}
+
 // renderHelpOverlay paints a centred key-reference card on top of the
-// current screen. The card lists the global keys plus the keys that
-// matter for whichever screen is currently in focus.
+// current screen. Always shows the global keys; appends per-screen
+// keys when the current model implements HelpKeyProvider.
 func (m *Root) renderHelpOverlay(base string) string {
 	rows := []components.KeyHelp{
 		{Key: "↑↓ / jk", Label: "navigate"},
@@ -364,19 +431,8 @@ func (m *Root) renderHelpOverlay(base string) string {
 		{Key: "?", Label: "toggle this help"},
 		{Key: "q / ctrl+c", Label: "quit"},
 	}
-	switch m.current.(type) {
-	case *list.Model:
-		rows = append(rows,
-			components.KeyHelp{Key: "/", Label: "filter profiles"},
-			components.KeyHelp{Key: "d", Label: "disconnect active"},
-			components.KeyHelp{Key: "e", Label: "edit profile"},
-			components.KeyHelp{Key: "f", Label: "toggle favorite"},
-			components.KeyHelp{Key: "i", Label: "import (.ovpn / .o3ui.json)"},
-			components.KeyHelp{Key: "X", Label: "export profile → JSON"},
-			components.KeyHelp{Key: "R", Label: "rename profile"},
-			components.KeyHelp{Key: ",", Label: "settings"},
-			components.KeyHelp{Key: "r", Label: "reload"},
-		)
+	if hp, ok := m.current.(HelpKeyProvider); ok {
+		rows = append(rows, hp.HelpKeys()...)
 	}
 
 	var b strings.Builder

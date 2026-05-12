@@ -85,6 +85,22 @@ type flashClearMsg struct{}
 
 func New(svc *app.Service) *Model { return &Model{svc: svc} }
 
+// HelpKeys is what the ? overlay shows for this screen. Mirrors the
+// switch in Update so the two can't drift apart silently.
+func (m *Model) HelpKeys() []components.KeyHelp {
+	return []components.KeyHelp{
+		{Key: "/", Label: "filter (Esc closes mode, Ctrl+U clears)"},
+		{Key: "d", Label: "disconnect active (confirm)"},
+		{Key: "e", Label: "edit profile"},
+		{Key: "f", Label: "toggle favorite"},
+		{Key: "i", Label: "import .ovpn or .o3ui.json"},
+		{Key: "X", Label: "export profile → JSON (confirm)"},
+		{Key: "R", Label: "rename profile"},
+		{Key: ",", Label: "settings"},
+		{Key: "r", Label: "reload"},
+	}
+}
+
 // Init is bubbletea's first-tick. We kick off a load so the screen is not
 // blank on first render.
 func (m *Model) Init() tea.Cmd { return m.loadCmd() }
@@ -143,8 +159,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.SetSize(msg.Width, msg.Height)
 
 	case reloadMsg:
+		// Preserve the user's selection across realtime reloads:
+		// remember the ConfigPath at the cursor, refresh the list,
+		// then put the cursor back on the same row. Without this, a
+		// signal arriving while a profile is deleted elsewhere
+		// clamps the cursor to the last row and yanks the user out
+		// of context for no reason.
+		var selected string
+		if cur := m.currentItem(); cur != nil {
+			selected = cur.ConfigPath
+		}
 		m.items = msg.items
 		m.loadErr = msg.err
+		if selected != "" {
+			vis := m.visible()
+			for i, idx := range vis {
+				if m.items[idx].ConfigPath == selected {
+					m.cursor = i
+					break
+				}
+			}
+		}
 		if m.cursor >= len(m.items) {
 			m.cursor = len(m.items) - 1
 		}
@@ -175,10 +210,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		// Filter input mode swallows printable keys until Esc/Enter.
+		// Esc only leaves the input mode — the filter itself stays so
+		// the user can aim the cursor with the keys still narrowing
+		// the view. Second Esc (or Ctrl+U) clears the buffer. fzf and
+		// ripgrep work the same way; clearing on first Esc as an
+		// earlier version did broke muscle memory.
 		if m.filtMode {
 			switch msg.String() {
 			case "esc":
 				m.filtMode = false
+			case "ctrl+u":
 				m.filter = ""
 			case "enter":
 				m.filtMode = false
@@ -282,8 +323,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.renameDraft = it.Name
 				m.renamingPath = it.ConfigPath
 			}
-		case "s":
-			return m, m.emitCmd("stats")
+		// `s` (stats) was a dead key — Root had no handler. Removed
+		// rather than wired to something speculative; we'll add it
+		// back when there's a real stats screen to point at.
 		case ",":
 			return m, func() tea.Msg { return ActionMsg{Kind: "settings"} }
 		case "f":

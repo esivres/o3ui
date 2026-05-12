@@ -74,6 +74,41 @@ nfpms:
         dst: /usr/share/fish/vendor_completions.d/o3ui.fish
         file_info:
           mode: 0644
+      # Cinnamon desklet, system-wide. /usr/share/cinnamon/desklets is
+      # the second discovery root after ~/.local/share/cinnamon/desklets,
+      # so dropping the bundle here makes the desklet immediately
+      # visible in System Settings → Desklets on Mint — no per-user
+      # `o3ui desklet install` step required. Harmless on non-Cinnamon
+      # systems (the directory just sits there).
+      - src: internal/cli/desklet/o3ui@esivres/metadata.json
+        dst: /usr/share/cinnamon/desklets/o3ui@esivres/metadata.json
+        file_info:
+          mode: 0644
+      - src: internal/cli/desklet/o3ui@esivres/desklet.js
+        dst: /usr/share/cinnamon/desklets/o3ui@esivres/desklet.js
+        file_info:
+          mode: 0644
+      - src: internal/cli/desklet/o3ui@esivres/stylesheet.css
+        dst: /usr/share/cinnamon/desklets/o3ui@esivres/stylesheet.css
+        file_info:
+          mode: 0644
+      - src: internal/cli/desklet/o3ui@esivres/settings-schema.json
+        dst: /usr/share/cinnamon/desklets/o3ui@esivres/settings-schema.json
+        file_info:
+          mode: 0644
+      - src: internal/cli/desklet/o3ui@esivres/icon.png
+        dst: /usr/share/cinnamon/desklets/o3ui@esivres/icon.png
+        file_info:
+          mode: 0644
+      - src: internal/cli/desklet/o3ui@esivres/icon.svg
+        dst: /usr/share/cinnamon/desklets/o3ui@esivres/icon.svg
+        file_info:
+          mode: 0644
+    scripts:
+      # Postinstall whispers a hint when Cinnamon is detected — no
+      # destructive auto-enable (that would write into the user's
+      # dconf without consent), just point at the right setting.
+      postinstall: scripts/postinstall.sh
     deb:
       compression: zstd
 

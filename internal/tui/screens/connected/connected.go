@@ -100,9 +100,13 @@ func (m *Model) fetchSession() (ovpn.Session, error) {
 	if err != nil {
 		return ovpn.Session{}, err
 	}
-	for _, s := range all {
-		if s.Path == m.sessionPath {
-			return s, nil
+	// Index-based — `ovpn.Session` is ~128 bytes and ranging by value
+	// copies the whole struct each iteration. Loop only reads `Path`,
+	// so taking the address sidesteps the copy without changing
+	// semantics.
+	for i := range all {
+		if all[i].Path == m.sessionPath {
+			return all[i], nil
 		}
 	}
 	return ovpn.Session{}, fmt.Errorf("session not found")

@@ -13,8 +13,7 @@ import (
 // stubBackend lets us drive the list screen against a known set of
 // configs/sessions without spinning up D-Bus or SQLite.
 type stubBackend struct {
-	configs  []ovpn.Config
-	sessions []ovpn.Session
+	configs []ovpn.Config
 }
 
 func (s *stubBackend) List() ([]ovpn.Config, error) { return s.configs, nil }

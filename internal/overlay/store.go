@@ -153,6 +153,12 @@ func (s *SQLite) Get(configPath string) (Overlay, error) {
 	return o, err
 }
 
+// Upsert takes Overlay by value because the OverlayStore interface in
+// internal/app does too — switching one side to a pointer forks every
+// caller and fake. The struct is ~128B and Upsert runs at most once
+// per user action; the copy is irrelevant.
+//
+//nolint:gocritic // hugeParam: kept value-typed for API symmetry
 func (s *SQLite) Upsert(o Overlay) error {
 	if o.ConfigPath == "" {
 		return errors.New("overlay: empty config_path")

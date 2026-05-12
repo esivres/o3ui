@@ -113,10 +113,11 @@ func tick() tea.Cmd {
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	// Filepicker height is content rows; reserve room for header + tabs + footer.
-	m.picker.Height = h - 14
-	if m.picker.Height < 8 {
-		m.picker.Height = 8
+	ph := h - 14
+	if ph < 8 {
+		ph = 8
 	}
+	m.picker.SetHeight(ph)
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

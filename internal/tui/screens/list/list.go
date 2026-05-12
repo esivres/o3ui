@@ -74,8 +74,9 @@ func (m *Model) fetch() reloadMsg {
 	}
 	active, _ := m.svc.ActiveSessions()
 	hasSession := map[string]bool{}
-	for _, s := range active {
-		hasSession[s.ConfigPath] = true
+	// Index-based — Session is ~128B and we read only one field.
+	for i := range active {
+		hasSession[active[i].ConfigPath] = true
 	}
 	items := make([]Item, 0, len(cfgs))
 	for _, c := range cfgs {
@@ -429,6 +430,13 @@ func (m *Model) listInnerWidth() int {
 	return w
 }
 
+// renderRow takes Item by value — gocritic flags 80B as heavy, but
+// rendering is dominated by the lipgloss styling that follows, not by
+// the copy. Passing by pointer would invite goroutine aliasing in a
+// future event-driven render path; keeping value-semantics here is
+// deliberate.
+//
+//nolint:gocritic // hugeParam: see comment above
 func (m *Model) renderRow(idx int, it Item, selected bool) string {
 	width := m.listInnerWidth()
 	cols := tableColumns(width)
@@ -528,11 +536,10 @@ func colourRow(row string, idx int, code, name, statusGlyph, gutter, last string
 	idxText := fmt.Sprintf("[%d]", idx)
 	r = strings.Replace(r, idxText, lipgloss.NewStyle().Foreground(idxColor).Render(idxText), 1)
 	r = strings.Replace(r, code, lipgloss.NewStyle().Foreground(codeColor).Render(code), 1)
-	// Name may have been truncated to fit the column, so try the full
-	// version first then a leading prefix.
-	if strings.Contains(r, name) {
-		r = strings.Replace(r, name, lipgloss.NewStyle().Foreground(nameColor).Render(name), 1)
-	}
+	// Name may have been truncated to fit the column. strings.Replace
+	// with N=1 is a no-op when the substring isn't present, so the
+	// Contains-guard is redundant — same outcome, less code.
+	r = strings.Replace(r, name, lipgloss.NewStyle().Foreground(nameColor).Render(name), 1)
 	if favorite {
 		r = strings.Replace(r, "*", theme.AccentYellow.Render("*"), 1)
 	}
@@ -562,10 +569,9 @@ func truncateWidth(s string, n int) string {
 	if n <= 1 {
 		return "…"
 	}
-	rs := []rune(s)
 	out := make([]rune, 0, n)
 	w := 0
-	for _, r := range rs {
+	for _, r := range s {
 		rw := lipgloss.Width(string(r))
 		if w+rw > n-1 {
 			break
@@ -629,10 +635,10 @@ func (m *Model) headerPills() []string {
 		}
 	}
 	var first string
-	switch {
-	case active == 0:
+	switch active {
+	case 0:
 		first = components.Pill("○ idle", theme.FgDim, theme.Panel2)
-	case active == 1:
+	case 1:
 		first = components.Pill("● 1 active", theme.Mint, theme.MintDp)
 	default:
 		first = components.Pill(fmt.Sprintf("● %d active", active), theme.Mint, theme.MintDp)
@@ -643,6 +649,7 @@ func (m *Model) headerPills() []string {
 	}
 }
 
+//nolint:gocritic // hugeParam: same reasoning as renderRow above
 func statusText(it Item) string {
 	if it.HasSession {
 		return components.Pill("● connected", theme.Mint, theme.MintDp)

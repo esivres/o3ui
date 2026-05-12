@@ -174,9 +174,11 @@ func (m *Model) fetchStatus() (ovpn.Session, error) {
 	if err != nil {
 		return ovpn.Session{}, err
 	}
-	for _, s := range sessions {
-		if s.Path == m.sessionPath {
-			return s, nil
+	// Index-based range — ovpn.Session is ~128 bytes, copying once
+	// per iteration was a gocritic rangeValCopy hit.
+	for i := range sessions {
+		if sessions[i].Path == m.sessionPath {
+			return sessions[i], nil
 		}
 	}
 	return ovpn.Session{}, fmt.Errorf("session not found")

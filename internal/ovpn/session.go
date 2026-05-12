@@ -130,13 +130,12 @@ func (m *SessionManager) Get(path string) (Session, error) {
 			s.ConfigPath = string(op)
 		}
 	}
-	if s.DeviceName, err = getString("device_name"); err != nil {
-		// device_name only exists once a tunnel device has been created;
-		// missing is fine.
-	}
-	if s.SessionName, err = getString("session_name"); err != nil {
-		// same — best-effort.
-	}
+	// device_name exists only after the tunnel device is created;
+	// session_name is set by the daemon at session create. Both are
+	// best-effort — empty values are fine and missing properties are
+	// the common case for sessions still in handshake.
+	s.DeviceName, _ = getString("device_name")
+	s.SessionName, _ = getString("session_name")
 	if cs, err := obj.GetProperty(IfaceSession + ".session_created"); err == nil {
 		if t, ok := cs.Value().(uint64); ok {
 			s.CreatedAt = time.Unix(int64(t), 0)
@@ -149,14 +148,11 @@ func (m *SessionManager) Get(path string) (Session, error) {
 }
 
 func unmarshalStatus(v dbus.Variant) Status {
-	// (uus) — variant of struct
-	type tuple struct {
-		Major, Minor uint32
-		Message      string
-	}
-	var t tuple
-	if err := dbus.Store([]interface{}{v.Value()}, &t); err == nil {
-		return Status{Major: t.Major, Minor: t.Minor, Message: t.Message}
+	// (uus) — variant of struct. Decode straight into a Status so the
+	// struct-conversion linter doesn't need a tuple+copy.
+	var s Status
+	if err := dbus.Store([]interface{}{v.Value()}, &s); err == nil {
+		return s
 	}
 	return Status{}
 }

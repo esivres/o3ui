@@ -89,13 +89,14 @@ func (s *Sampler) tick(now time.Time) {
 		return
 	}
 	live := map[string]struct{}{}
-	for _, sess := range sessions {
-		live[sess.Path] = struct{}{}
-		stats, err := s.svc.sessions.Control(sess.Path).Statistics()
+	// Index-based — ovpn.Session is ~128B per element.
+	for i := range sessions {
+		live[sessions[i].Path] = struct{}{}
+		stats, err := s.svc.sessions.Control(sessions[i].Path).Statistics()
 		if err != nil {
 			continue
 		}
-		s.appendSample(sess.Path, now, stats)
+		s.appendSample(sessions[i].Path, now, stats)
 	}
 	// Evict any sessions we no longer see — keeping their history would
 	// leak memory across many connect/disconnect cycles.

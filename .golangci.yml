@@ -31,13 +31,11 @@ linters:
         - fieldalignment
         # err shadowing у нас осмысленный (вложенные блоки auth-цепочки).
         - shadow
-    staticcheck:
-      checks:
-        - all
-        - "-ST1003"   # OTP/TOTP/CLI/URL — abbreviations в стиле проекта
     revive:
       rules:
-        - name: exported
+        # `exported` was the loudest single source of noise (~50 hits on
+        # test fakes and trivial accessors). Public API doc is enforced
+        # by review, not by linter. Keep the useful pattern checks.
         - name: error-return
         - name: error-naming
         - name: if-return
@@ -47,9 +45,27 @@ linters:
       disabled-checks:
         - ifElseChain
         - singleCaseSwitch
+        # `evalOrder` flags `return m, m.loadCmd()` everywhere in
+        # bubbletea Update — that's the idiomatic shape used across
+        # the framework, not a per-site bug we'd want to silence one
+        # callsite at a time.
+        - evalOrder
+    staticcheck:
+      checks:
+        - all
+        - "-ST1003"   # OTP/TOTP/CLI/URL — abbreviations in project style
+        - "-ST1000"   # package comments — many small files don't need them
     errcheck:
       exclude-functions:
-        - (io.Closer).Close            # defer-close часто игнорирует ошибку осознанно
+        # defer Close on a doomed cleanup path is conventional; errors
+        # there have no actionable recovery. List both the interface
+        # form (database/sql Rows etc.) and our concrete bus/overlay
+        # handles whose Close is logically the same operation.
+        - (io.Closer).Close
+        - (*database/sql.Rows).Close
+        - (github.com/esivres/openvpn3ui/internal/ovpn.Conn).Close
+        - (*github.com/esivres/openvpn3ui/internal/overlay.SQLite).Close
+        - (*os.File).Close
         - fmt.Fprint
         - fmt.Fprintln
         - fmt.Fprintf

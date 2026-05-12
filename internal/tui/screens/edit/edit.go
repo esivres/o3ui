@@ -353,7 +353,7 @@ func (m *Model) renderSidebar() string {
 	}
 	var rows []string
 	for _, t := range tabs {
-		row := "  " + t.label
+		var row string
 		if t.active {
 			row = theme.AccentPink.Render("▎") + " " + theme.Bright.Render(t.label)
 		} else {

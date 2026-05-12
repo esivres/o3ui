@@ -1,9 +1,12 @@
-// openvpn3ui-tui is the Bubble Tea / lipgloss terminal UI for openvpn3.
-// The Fyne GUI binary stays as cmd/openvpn3ui — this is the v1 ship target.
+// openvpn3ui-tui is the entry point binary for the o3ui project. With
+// arguments it acts as a CLI (status/list/connect/disconnect/desklet);
+// without arguments it launches the Bubble Tea TUI.
 package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -23,27 +26,35 @@ func (a sessionAdapter) Control(path string) openapp.SessionControl {
 }
 
 func main() {
-	// CLI dispatch: any subcommand (status, list, connect, disconnect,
-	// desklet) is handled by internal/cli without spinning up the TUI.
-	// Returns -1 when no subcommand matched, in which case we fall
-	// through to the interactive TUI below.
+	// CLI dispatch first: subcommands return early without touching
+	// the TUI scaffolding. Anything else falls through to run().
 	if rc := cli.Dispatch(os.Args[1:], os.Stdout, os.Stderr); rc != -1 {
 		os.Exit(rc)
 	}
+	if err := run(); err != nil {
+		log.Fatalf("%v", err)
+	}
+}
 
+// run sets up Service + watcher + sampler and hands control to the TUI.
+// Returning errors instead of log.Fatal'ing inline so deferred Close
+// calls actually fire — the original version was a gocritic
+// `exitAfterDefer` hit because log.Fatal short-circuits process exit
+// before the bus connection / overlay handle get released cleanly.
+func run() error {
 	conn, err := ovpn.ConnectSystemBus()
 	if err != nil {
-		log.Fatalf("connect system bus: %v", err)
+		return fmt.Errorf("connect system bus: %w", err)
 	}
 	defer conn.Close()
 
 	overlayPath, err := overlay.DefaultPath()
 	if err != nil {
-		log.Fatalf("overlay path: %v", err)
+		return fmt.Errorf("overlay path: %w", err)
 	}
 	ov, err := overlay.Open(overlayPath)
 	if err != nil {
-		log.Fatalf("open overlay: %v", err)
+		return fmt.Errorf("open overlay: %w", err)
 	}
 	defer ov.Close()
 
@@ -75,7 +86,7 @@ func main() {
 	// into the bubbletea program via Run's events parameter.
 	watcher := ovpn.NewWatcher(conn)
 	go func() {
-		if err := watcher.Run(ctx); err != nil && err != context.Canceled {
+		if err := watcher.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("watcher: %v", err)
 		}
 	}()
@@ -88,6 +99,7 @@ func main() {
 	}()
 
 	if err := tui.Run(svc, prompter, events); err != nil {
-		log.Fatalf("tui: %v", err)
+		return fmt.Errorf("tui: %w", err)
 	}
+	return nil
 }

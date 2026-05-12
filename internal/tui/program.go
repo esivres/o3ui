@@ -126,6 +126,12 @@ func (m *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// handleListAction takes the message by value — bubbletea dispatches
+// every Msg through `Update(msg tea.Msg)` where the boxing already
+// copies it, so the second copy into our handler is unavoidable
+// without redesigning the interface above us.
+//
+//nolint:gocritic // hugeParam: bubbletea Msg dispatch is by-value by design
 func (m *Root) handleListAction(a list.ActionMsg) (tea.Model, tea.Cmd) {
 	switch a.Kind {
 	case "connect":
@@ -135,10 +141,11 @@ func (m *Root) handleListAction(a list.ActionMsg) (tea.Model, tea.Cmd) {
 		return m, next.Init()
 	case "disconnect":
 		// Find the active session path and tear it down. Then refresh list.
+		// Index-based range avoids copying each Session (~128 bytes).
 		if sessions, err := m.svc.ActiveSessions(); err == nil {
-			for _, s := range sessions {
-				if s.ConfigPath == a.Item.ConfigPath {
-					_ = m.svc.Disconnect(s.Path)
+			for i := range sessions {
+				if sessions[i].ConfigPath == a.Item.ConfigPath {
+					_ = m.svc.Disconnect(sessions[i].Path)
 					break
 				}
 			}
@@ -186,6 +193,8 @@ func (m *Root) gotoList() (tea.Model, tea.Cmd) {
 // openAuthModal saves the in-flight screen, swaps in an auth.Model for
 // the prompt, and remembers the reply channel so resolveAuth can write
 // the answer back to the connect goroutine.
+//
+//nolint:gocritic // hugeParam: see handleListAction — bubbletea Msg dispatch is by-value
 func (m *Root) openAuthModal(req promptRequest) (tea.Model, tea.Cmd) {
 	m.suspended = m.current
 	m.pendingReply = req.Reply

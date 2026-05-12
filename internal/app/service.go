@@ -82,9 +82,9 @@ func (s *Service) SetSessionLogLevel(sessionPath string, l LogLevel) error {
 	return s.sessions.Control(sessionPath).SetLogVerbosity(uint32(l))
 }
 
-// BackendServicesLister is the slice of ovpn.ListBackendServices that
-// the Service exposes. Surfaced via a method so the TUI doesn't need to
-// know about ovpn types directly.
+// BackendServices wraps ovpn.ListBackendServices so the TUI doesn't
+// need to know about ovpn types directly. Requires AttachBus to have
+// been called first.
 func (s *Service) BackendServices() ([]ovpn.BackendService, error) {
 	if s.connFn == nil {
 		return nil, errors.New("backend services lookup not configured")
@@ -400,9 +400,10 @@ func (s *Service) ActiveSessions() ([]ovpn.Session, error) {
 		return nil, err
 	}
 	out := all[:0]
-	for _, x := range all {
-		if x.Status.IsActive() {
-			out = append(out, x)
+	// Index-based — Session ~128B; in-place filter, no extra copy.
+	for i := range all {
+		if all[i].Status.IsActive() {
+			out = append(out, all[i])
 		}
 	}
 	return out, nil
@@ -449,7 +450,7 @@ func (s *Service) Connect(ctx context.Context, configPath string) (string, error
 		// them and try to fill via Auth.
 		prompts, perr := ctl.PendingInputs()
 		if perr != nil {
-			return sessionPath, fmt.Errorf("ready=%v; queue=%w", err, perr)
+			return sessionPath, fmt.Errorf("ready=%w; queue=%w", err, perr)
 		}
 		if len(prompts) == 0 {
 			// Ready failed for a non-input reason. Surface it.

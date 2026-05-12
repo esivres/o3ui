@@ -35,7 +35,11 @@ type Account struct {
 }
 
 // Label returns "Issuer: Name" or one of them if the other is empty —
-// suitable for picker UI when multiple accounts are imported.
+// suitable for picker UI when multiple accounts are imported. Value
+// receiver kept so test literals (`Account{...}.Label()`) stay
+// addressable.
+//
+//nolint:gocritic // hugeParam: addressability matters more than the copy
 func (a Account) Label() string {
 	switch {
 	case a.Issuer != "" && a.Name != "":

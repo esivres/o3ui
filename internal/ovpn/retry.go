@@ -54,7 +54,11 @@ func (r retryingObject) Path() dbus.ObjectPath { return r.inner.Path() }
 
 func (r retryingObject) Call(method string, flags dbus.Flags, args ...interface{}) *dbus.Call {
 	var call *dbus.Call
-	withRetry(func() error {
+	// withRetry's error is the *last* attempt's call.Err; we return
+	// the dbus.Call itself, which still carries that error in .Err
+	// for the caller's Store/Err inspection. Discarding here is
+	// deliberate.
+	_ = withRetry(func() error {
 		call = r.inner.Call(method, flags, args...)
 		return call.Err
 	})

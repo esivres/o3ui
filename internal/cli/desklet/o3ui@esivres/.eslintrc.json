@@ -1,0 +1,27 @@
+{
+  "root": true,
+  "env": { "browser": false, "node": false },
+  "parserOptions": {
+    "ecmaVersion": 2017,
+    "sourceType": "script"
+  },
+  "globals": {
+    "imports": "readonly",
+    "log": "readonly",
+    "logError": "readonly",
+    "global": "readonly",
+    "_": "readonly"
+  },
+  "rules": {
+    "no-undef": "error",
+    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
+    "no-redeclare": "error",
+    "eqeqeq": ["error", "smart"],
+    "no-implicit-globals": "error",
+    "no-throw-literal": "error",
+    "no-fallthrough": "error",
+    "no-self-assign": "error",
+    "no-unreachable": "error",
+    "no-constant-condition": ["error", { "checkLoops": false }]
+  }
+}

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff5fa2"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="0" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#a6e3a1"/>
+      <stop offset="1" stop-color="#74e1c2"/>
+    </linearGradient>
+  </defs>
+  <!-- card background, matches the desklet body -->
+  <rect x="2" y="2" width="60" height="60" rx="14" ry="14"
+        fill="#0f1018" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+  <!-- shield arc — the "tunnel is up" affordance -->
+  <path d="M 32 10 C 14 16, 14 38, 32 54 C 50 38, 50 16, 32 10 Z"
+        fill="none" stroke="url(#ring)" stroke-width="2.5" opacity="0.85"/>
+  <!-- monogram "o3" -->
+  <text x="32" y="40"
+        font-family="JetBrains Mono, ui-monospace, monospace"
+        font-size="22" font-weight="700"
+        text-anchor="middle"
+        fill="url(#brand)">o3</text>
+</svg>

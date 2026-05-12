@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: build · vet · race-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "::error::files not gofmt'd:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test (-race)
+        run: go test -race -count=1 ./...
+
+      - name: build binary
+        run: go build -trimpath -ldflags="-s -w" -o /tmp/o3ui ./cmd/openvpn3ui-tui
+
+      # Probes the embedded desklet is wired in correctly — the install
+      # command writes 4 of its files to the destination dir.
+      - name: smoke desklet install
+        run: |
+          DEST=/tmp/desklet
+          mkdir -p "$DEST"
+          HOME=/tmp /tmp/o3ui desklet install
+          test -f /tmp/.local/share/cinnamon/desklets/o3ui@esivres/desklet.js
+          test -f /tmp/.local/share/cinnamon/desklets/o3ui@esivres/stylesheet.css
+          test -f /tmp/.local/share/cinnamon/desklets/o3ui@esivres/metadata.json
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m

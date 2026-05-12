@@ -1,0 +1,290 @@
+/*
+ * OVPN3 Cinnamon desklet stylesheet. Mirrors the design tokens from
+ * the static handoff (project/OVPN3 Desklet.html): JetBrains-Mono
+ * typography, ~288px floating card, dark indigo background, pastel
+ * accents (green/amber/pink) for connection states.
+ *
+ * Cinnamon's St toolkit supports a CSS subset; layout primitives are
+ * box-vertical / box-horizontal containers driven from desklet.js.
+ * Properties unavailable in St (backdrop-filter, gradients on text,
+ * keyframes) are dropped here — the same look is achieved with
+ * solid colours and explicit border styling.
+ */
+
+.o3ui-desklet {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  color: #cdd6f4;
+  background-color: rgba(15, 16, 24, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 0;
+  /* Width is driven by the widest child (typically the sparkline
+   * DrawingArea). Hard-capping with min/max-width lets children
+   * overflow the painted background — what looked like the desklet
+   * "growing past its frame" was actually min/max stuck at 288/240
+   * while the spark forced the inner BoxLayout wider. */
+  min-width: 256px;
+}
+
+.o3ui-desklet.compact {
+  min-width: 200px;
+}
+
+/* ── head ── */
+.o3ui-head {
+  spacing: 6px;
+  padding: 8px 12px 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.o3ui-head-title {
+  color: rgba(205, 214, 244, 0.7);
+  font-size: 11px;
+  font-weight: 600;
+}
+.o3ui-head-menu {
+  color: rgba(205, 214, 244, 0.4);
+  font-size: 14px;
+}
+.o3ui-head-menu:hover {
+  color: #cdd6f4;
+}
+
+/* ── status row ── */
+.o3ui-status-row {
+  padding: 14px 14px 10px 14px;
+  spacing: 10px;
+}
+.o3ui-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 8px;
+}
+.o3ui-dot-green { background-color: #a6e3a1; }
+.o3ui-dot-amber { background-color: #f9e2af; }
+.o3ui-dot-red   { background-color: #f38ba8; }
+.o3ui-dot-gray  { background-color: rgba(205, 214, 244, 0.3); }
+
+.o3ui-state {
+  font-size: 13px;
+  font-weight: 600;
+}
+.o3ui-state-failed { color: #f38ba8; }
+.o3ui-sub {
+  font-size: 11px;
+  color: rgba(205, 214, 244, 0.5);
+}
+
+/* ── action button ── */
+.o3ui-btn {
+  margin: 0 12px 12px 12px;
+  padding: 7px 0;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.o3ui-btn-connect {
+  background-color: #a6e3a1;
+  color: #0f1018;
+}
+.o3ui-btn-connect:hover {
+  background-color: #b6efb1;
+}
+.o3ui-btn-disconnect {
+  background-color: rgba(243, 139, 168, 0.12);
+  color: #f38ba8;
+  border: 1px solid rgba(243, 139, 168, 0.3);
+}
+.o3ui-btn-disconnect:hover {
+  background-color: rgba(243, 139, 168, 0.2);
+}
+.o3ui-btn-cancel {
+  background-color: rgba(205, 214, 244, 0.06);
+  color: rgba(205, 214, 244, 0.8);
+  border: 1px solid rgba(205, 214, 244, 0.12);
+}
+.o3ui-btn-retry {
+  background-color: #a78bfa;
+  color: #ffffff;
+}
+.o3ui-btn-retry:hover {
+  background-color: #b89cff;
+}
+
+/* ── stats grid ── */
+.o3ui-stats {
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+.o3ui-stat {
+  padding: 10px 12px;
+  spacing: 2px;
+  border-right: 1px solid rgba(255, 255, 255, 0.04);
+}
+.o3ui-stat-last { border-right: none; }
+.o3ui-stat-bottom { border-top: 1px solid rgba(255, 255, 255, 0.04); }
+
+.o3ui-stat-label {
+  font-size: 10px;
+  color: rgba(205, 214, 244, 0.45);
+  font-weight: 600;
+}
+.o3ui-stat-val {
+  font-size: 14px;
+  font-weight: 600;
+}
+.o3ui-stat-val-down { color: #a6e3a1; }
+.o3ui-stat-val-up   { color: #fab387; }
+.o3ui-stat-val-neutral { color: #cdd6f4; }
+.o3ui-stat-unit {
+  font-size: 10px;
+  color: rgba(205, 214, 244, 0.5);
+  font-weight: 400;
+}
+.o3ui-stat-sub {
+  font-size: 10px;
+  color: rgba(205, 214, 244, 0.4);
+}
+
+/* ── sparkline strip ── */
+.o3ui-spark {
+  padding: 8px 12px 10px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  spacing: 4px;
+}
+.o3ui-spark-legend {
+  font-size: 10px;
+  color: rgba(205, 214, 244, 0.4);
+  font-weight: 600;
+}
+
+/* ── progress (connecting) ── */
+.o3ui-prog-track {
+  height: 3px;
+  background-color: rgba(205, 214, 244, 0.08);
+  border-radius: 2px;
+  margin: 0 12px 10px 12px;
+}
+.o3ui-prog-fill {
+  height: 3px;
+  background-color: #a78bfa;
+  border-radius: 2px;
+}
+.o3ui-steps {
+  padding: 0 14px 12px 14px;
+  spacing: 10px;
+  font-size: 10px;
+}
+.o3ui-step-done    { color: #a6e3a1; }
+.o3ui-step-current { color: #cdd6f4; font-weight: 600; }
+.o3ui-step-pending { color: rgba(205, 214, 244, 0.3); }
+
+/* ── footer ── */
+.o3ui-foot {
+  padding: 6px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  background-color: rgba(255, 255, 255, 0.015);
+  font-size: 10px;
+  color: rgba(205, 214, 244, 0.45);
+  spacing: 8px;
+}
+.o3ui-foot-switch {
+  color: #a78bfa;
+}
+.o3ui-foot-switch:hover {
+  color: #b89cff;
+}
+
+/* ── error detail ── */
+.o3ui-err {
+  padding: 0 14px 12px 14px;
+  font-size: 11px;
+  color: rgba(243, 139, 168, 0.85);
+}
+.o3ui-err-why {
+  color: rgba(205, 214, 244, 0.55);
+  font-size: 10px;
+}
+
+/* ── profile picker ── */
+.o3ui-picker {
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  spacing: 0;
+}
+.o3ui-picker-title {
+  font-size: 10px;
+  color: rgba(205, 214, 244, 0.4);
+  font-weight: 600;
+  padding: 8px 12px 4px 12px;
+}
+.o3ui-picker-item {
+  padding: 6px 12px;
+  spacing: 8px;
+}
+.o3ui-picker-item:hover {
+  background-color: rgba(167, 139, 250, 0.08);
+}
+.o3ui-picker-item-on {
+  background-color: rgba(167, 139, 250, 0.18);
+}
+.o3ui-picker-flag {
+  width: 22px;
+  height: 16px;
+  border-radius: 3px;
+  background-color: rgba(167, 139, 250, 0.6);
+  color: rgba(15, 16, 24, 0.85);
+  font-size: 9px;
+  font-weight: 700;
+}
+.o3ui-picker-name { font-size: 12px; color: #cdd6f4; }
+.o3ui-picker-ping { font-size: 10px; color: rgba(205, 214, 244, 0.5); }
+
+/* ── compact mode (240px) overrides ── */
+/* Tighter padding/typography and a single-row stats strip — matches
+ * design state #4 (240px minimal layout). */
+.o3ui-desklet.compact .o3ui-head {
+  padding: 6px 10px 6px 10px;
+}
+.o3ui-desklet.compact .o3ui-head-title {
+  font-size: 10px;
+}
+.o3ui-desklet.compact .o3ui-status-row {
+  padding: 10px 10px 6px 10px;
+}
+.o3ui-desklet.compact .o3ui-state {
+  font-size: 12px;
+}
+.o3ui-desklet.compact .o3ui-sub {
+  font-size: 10px;
+}
+
+/* Inline ↓/↑ rates strip (replaces the 2x2 grid in compact mode). */
+.o3ui-stats-inline {
+  padding: 0 10px 8px 10px;
+  spacing: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.o3ui-stats-inline-down { color: #a6e3a1; }
+.o3ui-stats-inline-up   { color: #fab387; }
+
+/* Mini sparkline strip without the divider rule. */
+.o3ui-spark-mini {
+  padding: 4px 10px 6px 10px;
+}
+
+/* Slim disconnect bar — flush to the card edges, no rounded corners
+ * or accent border, sits as a thin strip at the bottom. */
+.o3ui-btn-slim {
+  margin: 0;
+  padding: 6px 0;
+  border-radius: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  background-color: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  color: #f38ba8;
+}
+.o3ui-btn-slim:hover {
+  background-color: rgba(243, 139, 168, 0.08);
+}

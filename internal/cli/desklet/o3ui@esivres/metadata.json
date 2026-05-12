@@ -1,0 +1,9 @@
+{
+  "uuid": "o3ui@esivres",
+  "name": "OVPN3",
+  "description": "OpenVPN3 status & quick toggle — driven by the o3ui CLI.",
+  "version": "0.1.0",
+  "max-instances": 1,
+  "prevent-decorations": true,
+  "icon": "icon"
+}

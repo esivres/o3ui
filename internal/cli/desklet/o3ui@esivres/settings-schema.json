@@ -1,0 +1,20 @@
+{
+  "profile": {
+    "type": "entry",
+    "default": "",
+    "description": "Profile name to drive",
+    "tooltip": "Name (case-insensitive substring) or D-Bus path of the openvpn3 profile this desklet controls. Leave empty to use whatever the last connected profile was."
+  },
+  "compact": {
+    "type": "checkbox",
+    "default": false,
+    "description": "Compact mode",
+    "tooltip": "Shrink the desklet to the 240px minimal layout (no stats grid, mini sparkline)."
+  },
+  "cli_path": {
+    "type": "entry",
+    "default": "",
+    "description": "o3ui binary path",
+    "tooltip": "Absolute path to the o3ui binary. Leave empty to search $PATH (which won't include ~/.local/bin under Cinnamon's session unless you set it)."
+  }
+}

@@ -1,0 +1,70 @@
+# golangci-lint v2 config. Узкий, прицельный набор — каждый линтер
+# либо ловит реальные баги, либо удерживает один консистентный стиль.
+# Гигиенический минимум: vet, errcheck, staticcheck, ineffassign, unused.
+# Всё остальное — точечно по boundaries проекта (errorlint для D-Bus
+# обёрток с errors.Is, copyloopvar под bubbletea Cmd-замыкания).
+version: "2"
+
+run:
+  timeout: 3m
+
+linters:
+  default: none
+  enable:
+    - errcheck       # незакрытые ошибки — критично для D-Bus/SQL/keyring
+    - govet          # уже ловил unkeyed-fields; обязательная база
+    - ineffassign    # присваивания без чтения — частый артефакт рефакторинга
+    - staticcheck    # SA-чеки + simplify; единственный «крупный» линтер, который окупается
+    - unused         # мёртвый код (бывшие unused/varcheck/deadcode объединены сюда)
+    - gocritic       # выборочно: только diagnostic + performance, без stylecheck-шума
+    - revive         # мягкая замена golint; держим только exported + ошибочные имена
+    - copyloopvar    # ловушка range-переменной в bubbletea Cmd-замыканиях (Go 1.22+)
+    - bodyclose      # на будущее, если появится net/http; копейки стоит
+    - errorlint      # errors.Is/As — у нас уже используется (overlay.ErrNotFound)
+    - misspell       # опечатки в комментариях/строках — много doc-комментариев
+    - nolintlint     # запрещаем мусорные //nolint без причины
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        # godbus interface{}-поля и bubbletea Msg-структуры всё равно не выровнять.
+        - fieldalignment
+        # err shadowing у нас осмысленный (вложенные блоки auth-цепочки).
+        - shadow
+    staticcheck:
+      checks:
+        - all
+        - "-ST1003"   # OTP/TOTP/CLI/URL — abbreviations в стиле проекта
+    revive:
+      rules:
+        - name: exported
+        - name: error-return
+        - name: error-naming
+        - name: if-return
+        - name: increment-decrement
+    gocritic:
+      enabled-tags: [diagnostic, performance]
+      disabled-checks:
+        - ifElseChain
+        - singleCaseSwitch
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close            # defer-close часто игнорирует ошибку осознанно
+        - fmt.Fprint
+        - fmt.Fprintln
+        - fmt.Fprintf
+  exclusions:
+    generated: lax
+    rules:
+      - path: _test\.go
+        linters: [errcheck, gocritic, revive]
+      - path: internal/cli/desklet/    # только assets + JS, не Go
+        linters: [unused]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes: [github.com/esivres/openvpn3ui]

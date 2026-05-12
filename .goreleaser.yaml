@@ -1,0 +1,84 @@
+# goreleaser v2 config. Produces:
+#   - linux amd64 + arm64 binaries
+#   - tar.gz archives
+#   - .deb packages (via nfpm)
+#   - checksums.txt
+# Invoked from .github/workflows/release.yml on tag push.
+
+version: 2
+project_name: o3ui
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: o3ui
+    main: ./cmd/openvpn3ui-tui
+    binary: o3ui
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+archives:
+  - id: o3ui
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+nfpms:
+  - id: o3ui-deb
+    package_name: o3ui
+    vendor: esivres
+    homepage: https://github.com/esivres/o3ui
+    maintainer: Aleksandr Usov <esivres@gmail.com>
+    description: |-
+      OpenVPN3 controller — Bubble Tea TUI and Cinnamon desklet, driven by
+      openvpn3-linux over D-Bus. Includes TOTP auto-fill, secret-service
+      credential storage, and a status CLI for scripting.
+    license: MIT
+    formats:
+      - deb
+    bindir: /usr/bin
+    section: net
+    priority: optional
+    # openvpn3-linux is the actual VPN backend; we depend on it being
+    # present on the target system. Soft-recommend cinnamon — the binary
+    # is useful even without it (TUI works anywhere).
+    dependencies:
+      - openvpn3
+    recommends:
+      - cinnamon
+      - libsecret-1-0
+    deb:
+      compression: zstd
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^ci:"
+      - "Merge pull request"
+
+release:
+  github:
+    owner: esivres
+    name: o3ui
+  draft: false
+  prerelease: auto

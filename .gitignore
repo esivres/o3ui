@@ -1,0 +1,33 @@
+# Go build artifacts
+/bin/
+/o3ui
+/openvpn3ui
+/openvpn3ui-tui
+*.test
+*.out
+coverage.txt
+
+# goreleaser
+/dist/
+
+# Editors / IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local data (overlay SQLite, runtime cache)
+*.db
+*.db-journal
+status.json
+
+# Local linter cache
+.golangci-cache/
+
+# Design handoff (HTML/JSX prototypes from claude design) — lives in
+# /tmp during sessions, never belongs in the repo.
+design/
+mocks/
+mockups/
+*.handoff.html
+

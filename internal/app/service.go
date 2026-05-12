@@ -20,6 +20,10 @@ type ConfigBackend interface {
 	List() ([]ovpn.Config, error)
 	Import(name, profile string, persistent bool) (string, error)
 	Remove(path string) error
+	// Fetch returns the original .ovpn body for an existing config path.
+	// Used by the portable-profile exporter so a backup carries the
+	// real config text alongside our overlay metadata.
+	Fetch(path string) (string, error)
 }
 
 // SessionBackend is the slice of ovpn.SessionManager the service uses.

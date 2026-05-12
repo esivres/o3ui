@@ -20,7 +20,8 @@ func (s *stubBackend) List() ([]ovpn.Config, error) { return s.configs, nil }
 func (s *stubBackend) Import(string, string, bool) (string, error) {
 	return "", nil
 }
-func (s *stubBackend) Remove(string) error { return nil }
+func (s *stubBackend) Remove(string) error          { return nil }
+func (s *stubBackend) Fetch(string) (string, error) { return "", nil }
 
 type stubSessions struct{ list []ovpn.Session }
 

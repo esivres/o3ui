@@ -66,6 +66,18 @@ func (m *ConfigManager) fetch(p dbus.ObjectPath) (Config, error) {
 	return c, nil
 }
 
+// Fetch returns the original .ovpn body the configuration was imported
+// with. openvpn3's configuration manager preserves the source text on
+// disk so the user can round-trip a profile through their backups.
+func (m *ConfigManager) Fetch(path string) (string, error) {
+	obj := m.conn.Object(BusConfiguration, dbus.ObjectPath(path))
+	var body string
+	if err := obj.Call(IfaceConfiguration+".Fetch", 0).Store(&body); err != nil {
+		return "", fmt.Errorf("Fetch %s: %w", path, err)
+	}
+	return body, nil
+}
+
 // Remove deletes a configuration by its D-Bus path.
 func (m *ConfigManager) Remove(path string) error {
 	obj := m.conn.Object(BusConfiguration, dbus.ObjectPath(path))

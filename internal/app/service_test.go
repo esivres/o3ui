@@ -37,6 +37,9 @@ func (f *fakeConfigs) Import(name, profile string, _ bool) (string, error) {
 	return "/net/openvpn/v3/configuration/x", nil
 }
 func (f *fakeConfigs) Remove(path string) error { f.removed = path; return nil }
+func (f *fakeConfigs) Fetch(string) (string, error) {
+	return "client\ndev tun\nremote vpn.test 1194\n", nil
+}
 
 // fakeSessions implements app.SessionBackend.
 type fakeSessions struct {

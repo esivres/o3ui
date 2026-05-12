@@ -182,7 +182,8 @@ func (f *fakeConfigs) List() ([]ovpn.Config, error) { return nil, nil }
 func (f *fakeConfigs) Import(string, string, bool) (string, error) {
 	return "", errors.New("unused")
 }
-func (f *fakeConfigs) Remove(string) error { return errors.New("unused") }
+func (f *fakeConfigs) Remove(string) error          { return errors.New("unused") }
+func (f *fakeConfigs) Fetch(string) (string, error) { return "", errors.New("unused") }
 
 type fakeSessions struct{ ctl *fakeCtl }
 

@@ -5,6 +5,8 @@ package tui
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,6 +18,7 @@ import (
 	"github.com/esivres/openvpn3ui/internal/tui/screens/connected"
 	"github.com/esivres/openvpn3ui/internal/tui/screens/connecting"
 	"github.com/esivres/openvpn3ui/internal/tui/screens/edit"
+	importportable "github.com/esivres/openvpn3ui/internal/tui/screens/importprofile"
 	"github.com/esivres/openvpn3ui/internal/tui/screens/list"
 	"github.com/esivres/openvpn3ui/internal/tui/screens/otpimport"
 	"github.com/esivres/openvpn3ui/internal/tui/screens/settings"
@@ -112,6 +115,8 @@ func (m *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.gotoList()
 	case settings.BackMsg:
 		return m.gotoList()
+	case importportable.BackMsg:
+		return m.gotoList()
 
 	case promptRequest:
 		return m.openAuthModal(msg)
@@ -178,9 +183,56 @@ func (m *Root) handleListAction(a list.ActionMsg) (tea.Model, tea.Cmd) {
 		next.SetSize(m.width, m.height)
 		m.current = next
 		return m, next.Init()
+	case "export":
+		return m, m.exportProfile(a.Item.ConfigPath, a.Item.Name)
+	case "import-portable":
+		next := importportable.New(m.svc)
+		next.SetSize(m.width, m.height)
+		m.current = next
+		return m, next.Init()
 	}
-	// Other actions (import/stats) — not yet routed.
+	// Other actions (stats) — not yet routed.
 	return m, nil
+}
+
+// exportProfile dumps the selected profile as a v1 portable bundle to
+// $HOME and flashes the result back to the list screen. Synchronous —
+// the work is one D-Bus Fetch plus a single write, fast enough that
+// blocking the event loop here doesn't show.
+func (m *Root) exportProfile(configPath, displayName string) tea.Cmd {
+	return func() tea.Msg {
+		p, err := m.svc.ExportProfile(configPath)
+		if err != nil {
+			return list.FlashMsg{Text: "export failed: " + err.Error(), IsError: true}
+		}
+		data, err := app.MarshalPortable(p)
+		if err != nil {
+			return list.FlashMsg{Text: "marshal failed: " + err.Error(), IsError: true}
+		}
+		dir, err := os.UserHomeDir()
+		if err != nil {
+			dir = os.TempDir()
+		}
+		fname := filepath.Join(dir, sanitiseFilename(displayName)+".o3ui.json")
+		// 0600 so the file with credentials/TOTP secret is at least
+		// not world-readable from the moment it lands.
+		if err := os.WriteFile(fname, data, 0o600); err != nil {
+			return list.FlashMsg{Text: "write failed: " + err.Error(), IsError: true}
+		}
+		return list.FlashMsg{Text: "✓ exported to " + fname}
+	}
+}
+
+// sanitiseFilename strips characters that make a name awkward on disk.
+// Replaces path separators and trims whitespace; otherwise the original
+// is preserved so the file name still mirrors the profile name.
+func sanitiseFilename(s string) string {
+	r := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "\x00", "")
+	out := strings.TrimSpace(r.Replace(s))
+	if out == "" {
+		return "profile"
+	}
+	return out
 }
 
 func (m *Root) gotoList() (tea.Model, tea.Cmd) {
@@ -318,6 +370,8 @@ func (m *Root) renderHelpOverlay(base string) string {
 			components.KeyHelp{Key: "e", Label: "edit profile"},
 			components.KeyHelp{Key: "f", Label: "toggle favorite"},
 			components.KeyHelp{Key: "i", Label: "import .ovpn"},
+			components.KeyHelp{Key: "X", Label: "export profile → JSON"},
+			components.KeyHelp{Key: "J", Label: "import portable JSON"},
 			components.KeyHelp{Key: ",", Label: "settings"},
 			components.KeyHelp{Key: "r", Label: "reload"},
 		)

@@ -55,7 +55,25 @@ type Model struct {
 	loadErr  error
 	filter   string // current filter input
 	filtMode bool   // are we typing into the filter?
+
+	// flash is a transient status line shown above the help bar — used
+	// by Root to surface results of cross-screen actions (export
+	// produced a file, import restored a profile). flashUntil controls
+	// when the message fades; bubbletea has no built-in toast so we
+	// schedule a clear-tick.
+	flash      string
+	flashErr   bool
+	flashUntil time.Time
 }
+
+// FlashMsg lets Root push a status update into the list view — the
+// "exported to /home/…" line shown briefly below the table.
+type FlashMsg struct {
+	Text    string
+	IsError bool
+}
+
+type flashClearMsg struct{}
 
 func New(svc *app.Service) *Model { return &Model{svc: svc} }
 
@@ -132,6 +150,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ovpn.StatusChangeEvent:
 		return m, m.loadCmd()
 
+	case FlashMsg:
+		m.flash = msg.Text
+		m.flashErr = msg.IsError
+		m.flashUntil = time.Now().Add(6 * time.Second)
+		return m, tea.Tick(6*time.Second, func(time.Time) tea.Msg {
+			return flashClearMsg{}
+		})
+
+	case flashClearMsg:
+		if time.Now().After(m.flashUntil) {
+			m.flash = ""
+			m.flashErr = false
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		// Filter input mode swallows printable keys until Esc/Enter.
 		if m.filtMode {
@@ -185,6 +218,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.emitCmd("edit")
 		case "i":
 			return m, m.emitCmd("import")
+		case "X":
+			// Capital X — destructive in spirit (writes a file
+			// containing credentials), so we want a key that needs
+			// deliberate Shift to hit. Lowercase x is reserved for
+			// future "remove" semantics in the same spirit.
+			return m, m.emitCmd("export")
+		case "J":
+			// Companion to X — import a portable profile bundle.
+			// Capital J for parity (Shift on both halves of the
+			// round-trip), avoiding `i` which is the raw .ovpn import.
+			return m, func() tea.Msg { return ActionMsg{Kind: "import-portable"} }
 		case "s":
 			return m, m.emitCmd("stats")
 		case ",":
@@ -277,6 +321,14 @@ func (m *Model) View() string {
 	right := m.renderDetailBox(rightW, innerH)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
 
+	if m.flash != "" {
+		color := theme.Mint
+		if m.flashErr {
+			color = theme.Red
+		}
+		flash := lipgloss.NewStyle().Foreground(color).Bold(true).Render(m.flash)
+		return lipgloss.JoinVertical(lipgloss.Left, header, body, flash, help)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, help)
 }
 

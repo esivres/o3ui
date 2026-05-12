@@ -373,6 +373,7 @@ func (m *Root) renderHelpOverlay(base string) string {
 			components.KeyHelp{Key: "f", Label: "toggle favorite"},
 			components.KeyHelp{Key: "i", Label: "import (.ovpn / .o3ui.json)"},
 			components.KeyHelp{Key: "X", Label: "export profile → JSON"},
+			components.KeyHelp{Key: "R", Label: "rename profile"},
 			components.KeyHelp{Key: ",", Label: "settings"},
 			components.KeyHelp{Key: "r", Label: "reload"},
 		)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/esivres/openvpn3ui/internal/otp"
@@ -24,6 +25,8 @@ type ConfigBackend interface {
 	// Used by the portable-profile exporter so a backup carries the
 	// real config text alongside our overlay metadata.
 	Fetch(path string) (string, error)
+	// Rename changes the display name of an existing config in-place.
+	Rename(path, newName string) error
 }
 
 // SessionBackend is the slice of ovpn.SessionManager the service uses.
@@ -487,4 +490,15 @@ func (s *Service) Connect(ctx context.Context, configPath string) (string, error
 // Disconnect tears down a session by its D-Bus path.
 func (s *Service) Disconnect(sessionPath string) error {
 	return s.sessions.Control(sessionPath).Disconnect()
+}
+
+// RenameConfig changes the display name of a profile. Trims whitespace
+// and rejects empty input so a slip of Enter on an empty field doesn't
+// leave a nameless profile behind.
+func (s *Service) RenameConfig(configPath, newName string) error {
+	trimmed := strings.TrimSpace(newName)
+	if trimmed == "" {
+		return errors.New("rename: empty name")
+	}
+	return s.configs.Rename(configPath, trimmed)
 }

@@ -56,6 +56,14 @@ type Model struct {
 	filter   string // current filter input
 	filtMode bool   // are we typing into the filter?
 
+	// renameMode swallows printable keys and routes them into
+	// renameDraft until the user confirms with Enter or aborts with
+	// Esc. Mirrors filtMode rather than pulling in a full textinput
+	// model — one-line rename doesn't justify the extra widget.
+	renameMode   bool
+	renameDraft  string
+	renamingPath string // config path being renamed
+
 	// flash is a transient status line shown above the help bar — used
 	// by Root to surface results of cross-screen actions (export
 	// produced a file, import restored a profile). flashUntil controls
@@ -186,6 +194,44 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Rename input mode — same shape as filtMode, different sink.
+		if m.renameMode {
+			switch msg.String() {
+			case "esc":
+				m.renameMode = false
+				m.renameDraft = ""
+				m.renamingPath = ""
+			case "enter":
+				newName := strings.TrimSpace(m.renameDraft)
+				path := m.renamingPath
+				m.renameMode = false
+				m.renameDraft = ""
+				m.renamingPath = ""
+				if newName == "" || path == "" {
+					return m, nil
+				}
+				if err := m.svc.RenameConfig(path, newName); err != nil {
+					return m, func() tea.Msg {
+						return FlashMsg{Text: "rename failed: " + err.Error(), IsError: true}
+					}
+				}
+				return m, tea.Batch(
+					m.loadCmd(),
+					func() tea.Msg { return FlashMsg{Text: "✓ renamed to " + newName} },
+				)
+			case "backspace":
+				if len(m.renameDraft) > 0 {
+					r := []rune(m.renameDraft)
+					m.renameDraft = string(r[:len(r)-1])
+				}
+			default:
+				if k := msg.String(); len(k) >= 1 && k != "left" && k != "right" && k != "up" && k != "down" {
+					m.renameDraft += k
+				}
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "up", "k":
 			if m.cursor > 0 {
@@ -227,6 +273,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// deliberate Shift to hit. Lowercase x is reserved for
 			// future "remove" semantics in the same spirit.
 			return m, m.emitCmd("export")
+		case "R":
+			// Inline rename — prefill with the current name so users
+			// can patch a typo without retyping the whole thing. Shift
+			// to make this a deliberate action.
+			if it := m.currentItem(); it != nil {
+				m.renameMode = true
+				m.renameDraft = it.Name
+				m.renamingPath = it.ConfigPath
+			}
 		case "s":
 			return m, m.emitCmd("stats")
 		case ",":
@@ -398,6 +453,16 @@ func (m *Model) renderListContent() string {
 			theme.Mint, theme.Panel2,
 		)
 		rows = append(rows, "", marker+" "+val+"  "+theme.Subtle.Render("matches ")+count)
+	}
+	if m.renameMode {
+		marker := theme.AccentPink.Render("rename ›")
+		val := lipgloss.NewStyle().
+			Background(theme.Surface).
+			Foreground(theme.FgBright).
+			Padding(0, 1).
+			Render(m.renameDraft + caret(true))
+		hint := theme.Subtle.Render("⏎ save · esc cancel")
+		rows = append(rows, "", marker+" "+val+"  "+hint)
 	}
 	return strings.Join(rows, "\n")
 }

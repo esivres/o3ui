@@ -40,6 +40,7 @@ func (f *fakeConfigs) Remove(path string) error { f.removed = path; return nil }
 func (f *fakeConfigs) Fetch(string) (string, error) {
 	return "client\ndev tun\nremote vpn.test 1194\n", nil
 }
+func (f *fakeConfigs) Rename(string, string) error { return nil }
 
 // fakeSessions implements app.SessionBackend.
 type fakeSessions struct {

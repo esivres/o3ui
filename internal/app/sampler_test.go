@@ -184,6 +184,7 @@ func (f *fakeConfigs) Import(string, string, bool) (string, error) {
 }
 func (f *fakeConfigs) Remove(string) error          { return errors.New("unused") }
 func (f *fakeConfigs) Fetch(string) (string, error) { return "", errors.New("unused") }
+func (f *fakeConfigs) Rename(string, string) error  { return errors.New("unused") }
 
 type fakeSessions struct{ ctl *fakeCtl }
 

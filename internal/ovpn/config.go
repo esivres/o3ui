@@ -78,6 +78,21 @@ func (m *ConfigManager) Fetch(path string) (string, error) {
 	return body, nil
 }
 
+// Rename changes the display name of a configuration. openvpn3 exposes
+// the name as a writable property on each config object, so this is a
+// single SetProperty call — the new value persists across runs because
+// our profiles are imported with persistent=true.
+func (m *ConfigManager) Rename(path, newName string) error {
+	if newName == "" {
+		return fmt.Errorf("rename: empty name")
+	}
+	obj := m.conn.Object(BusConfiguration, dbus.ObjectPath(path))
+	if err := obj.SetProperty(IfaceConfiguration+".name", newName); err != nil {
+		return fmt.Errorf("Rename %s: %w", path, err)
+	}
+	return nil
+}
+
 // Remove deletes a configuration by its D-Bus path.
 func (m *ConfigManager) Remove(path string) error {
 	obj := m.conn.Object(BusConfiguration, dbus.ObjectPath(path))

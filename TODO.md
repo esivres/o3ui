@@ -81,6 +81,3 @@ git history when fixed.
 ## Done — link to commits when we cut them
 
 Items finalised (and removed from this list) live in git history.
-The sister `cmd/openvpn3ui` Fyne entry point and `internal/ui/`
-package are intentionally kept around for the "second design" GUI
-variant — not abandoned code.

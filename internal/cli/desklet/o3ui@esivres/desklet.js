@@ -61,19 +61,17 @@ function _pad(n) {
 
 // runAsync spawns the o3ui CLI, captures stdout, returns it via cb.
 //
-// File-descriptor lifecycle (this is what causes the famous "desklet
-// hangs after a few hours" — each leaked FD takes one slot until the
-// user runs out of them):
-//
-//   • stdin and stderr FDs from spawn_async_with_pipes are never used,
-//     so we close() them eagerly. Forgetting these is the leak.
-//   • stdoutStream is wrapped with close_fd:true, so its FD goes when
-//     we explicitly stream.close() — done in every exit path (EOF,
-//     read error, callback throw). close_fd alone is not enough; the
-//     stream must be closed too.
-//   • spawn_close_pid releases the Process Handle on Windows / no-op
-//     on Linux, but we still call it for symmetry with DO_NOT_REAP_CHILD.
-//   • finish() runs at most once via the `done` flag — read_line_async
+// Lifecycle:
+//   • DO_NOT_REAP_CHILD + GLib.child_watch_add: we keep ownership of
+//     the child so we can collect its exit status. The watch handler is
+//     the ONLY thing that prevents the child from sitting as a zombie —
+//     spawn_close_pid is a no-op on POSIX. Without the watch, every
+//     poll tick leaks a <defunct> process; at 2 Hz that's ~7000/hour.
+//   • stdin/stderr FDs from spawn_async_with_pipes are never consumed,
+//     so we close() them eagerly. Forgetting these leaks one FD per call.
+//   • stdoutStream is wrapped with close_fd:true, so its FD is released
+//     when we explicitly stream.close() — done in every exit path.
+//   • finish() runs at most once via the `finished` flag; read_line_async
 //     can fire a second time on cancellation in some GLib versions.
 function runAsync(argv, cb) {
     let finished = false;
@@ -82,6 +80,7 @@ function runAsync(argv, cb) {
     let stderrFd = null;
     let stdoutStream = null;
     let stdoutReader = null;
+    let watchId = 0;
 
     function finish(out, err) {
         if (finished) return;
@@ -92,7 +91,9 @@ function runAsync(argv, cb) {
         // stdin/stderr were never consumed — close raw FDs directly.
         if (stdinFd !== null)  { try { GLib.close(stdinFd);  } catch (e) {} }
         if (stderrFd !== null) { try { GLib.close(stderrFd); } catch (e) {} }
-        if (pid !== null)      { try { GLib.spawn_close_pid(pid); } catch (e) {} }
+        // PID is reaped by the child_watch handler below; do NOT call
+        // spawn_close_pid here — on POSIX it's a no-op and the only
+        // legitimate reaper is the watch firing.
         cb(out, err);
     }
 
@@ -112,6 +113,15 @@ function runAsync(argv, cb) {
         } else {
             pid = res[0]; stdinFd = res[1]; stdoutFd = res[2]; stderrFd = res[3];
         }
+
+        // Reap the child as soon as it exits — otherwise it lingers as
+        // a zombie until cinnamon itself dies. spawn_close_pid is the
+        // only thing that releases the kernel PID slot AFTER waitpid()
+        // succeeded, and child_watch_add internally calls waitpid().
+        watchId = GLib.child_watch_add(GLib.PRIORITY_DEFAULT, pid, function (p, _status) {
+            try { GLib.spawn_close_pid(p); } catch (e) {}
+            watchId = 0;
+        });
 
         stdoutStream = new Gio.UnixInputStream({ fd: stdoutFd, close_fd: true });
         stdoutReader = new Gio.DataInputStream({ base_stream: stdoutStream });

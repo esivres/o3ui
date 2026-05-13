@@ -40,6 +40,8 @@ func Dispatch(args []string, stdout, stderr io.Writer) int {
 		return runDisconnect(args[1:], stdout, stderr)
 	case "desklet":
 		return runDesklet(args[1:], stdout, stderr)
+	case "pipe-api":
+		return runPipeAPI(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return 0

@@ -2,9 +2,14 @@
  * OVPN3 Cinnamon desklet
  *
  * A thin status/control widget for openvpn3, driven by the o3ui CLI.
- * Polls `o3ui status --json` every second (a cheap call — the CLI
- * caches its last sample under $XDG_RUNTIME_DIR to compute byte-rate
- * deltas across invocations), and re-renders the appropriate state:
+ * Holds one long-lived `o3ui pipe-api` child for the desklet lifetime
+ * and speaks JSON-lines RPC over stdin/stdout. The previous fork-per-
+ * tick model leaked zombies (DO_NOT_REAP_CHILD without a child_watch);
+ * this version spawns once, child_watch reaps on respawn, and the
+ * watchdog restarts the backend with exponential backoff if it dies.
+ *
+ * The poll loop calls `status` every 2s and re-renders the matching
+ * state:
  *
  *   disconnected → big green Connect (+ profile picker on click)
  *   connecting   → amber pulse, gradient progress, handshake steps
@@ -59,94 +64,185 @@ function _pad(n) {
     return (n < 10 ? "0" : "") + n;
 }
 
-// runAsync spawns the o3ui CLI, captures stdout, returns it via cb.
+// RpcClient maintains a single long-lived `o3ui pipe-api` child and
+// speaks JSON-lines with it over stdin/stdout. It replaces the old
+// fork-per-tick model that leaked one zombie every poll (~7000/hour at
+// 2 Hz). Lifecycle:
 //
-// Lifecycle:
-//   • DO_NOT_REAP_CHILD + GLib.child_watch_add: we keep ownership of
-//     the child so we can collect its exit status. The watch handler is
-//     the ONLY thing that prevents the child from sitting as a zombie —
-//     spawn_close_pid is a no-op on POSIX. Without the watch, every
-//     poll tick leaks a <defunct> process; at 2 Hz that's ~7000/hour.
-//   • stdin/stderr FDs from spawn_async_with_pipes are never consumed,
-//     so we close() them eagerly. Forgetting these leaks one FD per call.
-//   • stdoutStream is wrapped with close_fd:true, so its FD is released
-//     when we explicitly stream.close() — done in every exit path.
-//   • finish() runs at most once via the `finished` flag; read_line_async
-//     can fire a second time on cancellation in some GLib versions.
-function runAsync(argv, cb) {
-    let finished = false;
-    let pid = null;
-    let stdinFd = null;
-    let stderrFd = null;
-    let stdoutStream = null;
-    let stdoutReader = null;
-    let watchId = 0;
+//   start()      spawn child, wire stdin/stdout streams, install
+//                child_watch to reap on exit, kick off the read loop.
+//   call()       send a request, register the callback in `pending`,
+//                resolve when the matching {id,result|error} arrives.
+//   _onExit()    child died → fail every pending callback so the UI
+//                doesn't hang forever, then schedule respawn with
+//                exponential backoff (1s, 2s, 4s, 8s, capped 30s).
+//   stop()       deliberate shutdown (on_desklet_removed): cancel the
+//                respawn timer, close stdin (child sees EOF and exits
+//                cleanly), let child_watch reap.
+//
+// All IO is async on the main Mainloop — we never block GJS. Writes are
+// done via Gio.DataOutputStream.put_string which is sync but only on a
+// pipe with empty kernel buffer space; our payloads are ~100 bytes so
+// this is effectively non-blocking.
+const RPC_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 
-    function finish(out, err) {
-        if (finished) return;
-        finished = true;
-        // Close stream first — that drains the FD via close_fd:true.
-        if (stdoutReader) { try { stdoutReader.close(null); } catch (e) {} }
-        if (stdoutStream) { try { stdoutStream.close(null); } catch (e) {} }
-        // stdin/stderr were never consumed — close raw FDs directly.
-        if (stdinFd !== null)  { try { GLib.close(stdinFd);  } catch (e) {} }
-        if (stderrFd !== null) { try { GLib.close(stderrFd); } catch (e) {} }
-        // PID is reaped by the child_watch handler below; do NOT call
-        // spawn_close_pid here — on POSIX it's a no-op and the only
-        // legitimate reaper is the watch firing.
-        cb(out, err);
-    }
+function RpcClient(argv) {
+    this.argv = argv;
+    this.pid = null;
+    this.stdinStream = null;
+    this.stdoutStream = null;
+    this.stdoutReader = null;
+    this.pending = {};
+    this.nextId = 1;
+    this.failures = 0;
+    this.alive = false;
+    this.respawnTimerId = 0;
+    this.stopped = false;
+    this.onEvent = null;
+    this._start();
+}
 
+RpcClient.prototype._start = function () {
+    if (this.stopped) return;
+    let res;
     try {
-        let stdoutFd;
-        let res = GLib.spawn_async_with_pipes(
-            null, argv, null,
+        res = GLib.spawn_async_with_pipes(
+            null, this.argv, null,
             GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
             null
         );
-        // GJS returns [success, pid, stdin, stdout, stderr] across the
-        // versions we care about, but defend against the older
-        // [pid, stdin, stdout, stderr] shape too.
-        if (res.length === 5) {
-            if (!res[0]) { finish(null, "spawn failed"); return; }
-            pid = res[1]; stdinFd = res[2]; stdoutFd = res[3]; stderrFd = res[4];
-        } else {
-            pid = res[0]; stdinFd = res[1]; stdoutFd = res[2]; stderrFd = res[3];
-        }
-
-        // Reap the child as soon as it exits — otherwise it lingers as
-        // a zombie until cinnamon itself dies. spawn_close_pid is the
-        // only thing that releases the kernel PID slot AFTER waitpid()
-        // succeeded, and child_watch_add internally calls waitpid().
-        watchId = GLib.child_watch_add(GLib.PRIORITY_DEFAULT, pid, function (p, _status) {
-            try { GLib.spawn_close_pid(p); } catch (e) {}
-            watchId = 0;
-        });
-
-        stdoutStream = new Gio.UnixInputStream({ fd: stdoutFd, close_fd: true });
-        stdoutReader = new Gio.DataInputStream({ base_stream: stdoutStream });
-        let buf = "";
-        function readNext() {
-            stdoutReader.read_line_async(GLib.PRIORITY_DEFAULT, null, function (s, r) {
-                if (finished) return;
-                try {
-                    let [line] = s.read_line_finish_utf8(r);
-                    if (line === null) {
-                        finish(buf, null);
-                        return;
-                    }
-                    buf += line + "\n";
-                    readNext();
-                } catch (e) {
-                    finish(buf, "" + e);
-                }
-            });
-        }
-        readNext();
     } catch (e) {
-        finish(null, "" + e);
+        this._scheduleRespawn();
+        return;
     }
-}
+
+    let stdinFd, stdoutFd, stderrFd;
+    if (res.length === 5) {
+        if (!res[0]) { this._scheduleRespawn(); return; }
+        this.pid = res[1]; stdinFd = res[2]; stdoutFd = res[3]; stderrFd = res[4];
+    } else {
+        this.pid = res[0]; stdinFd = res[1]; stdoutFd = res[2]; stderrFd = res[3];
+    }
+    // stderr is unused by pipe-api; close immediately so it doesn't
+    // pile up FDs over respawns.
+    if (stderrFd !== null) { try { GLib.close(stderrFd); } catch (e) {} }
+
+    this.stdinStream = new Gio.DataOutputStream({
+        base_stream: new Gio.UnixOutputStream({ fd: stdinFd, close_fd: true }),
+    });
+    this.stdoutStream = new Gio.UnixInputStream({ fd: stdoutFd, close_fd: true });
+    this.stdoutReader = new Gio.DataInputStream({ base_stream: this.stdoutStream });
+
+    // child_watch_add internally calls waitpid() when the child exits;
+    // spawn_close_pid in the callback frees the PID slot. Without this
+    // every child sits as <defunct> until cinnamon itself dies.
+    let self = this;
+    GLib.child_watch_add(GLib.PRIORITY_DEFAULT, this.pid, function (p, _status) {
+        try { GLib.spawn_close_pid(p); } catch (e) {}
+        self._onExit();
+    });
+
+    this.alive = true;
+    this._readNext();
+};
+
+RpcClient.prototype._readNext = function () {
+    let self = this;
+    if (!this.stdoutReader || !this.alive) return;
+    this.stdoutReader.read_line_async(GLib.PRIORITY_DEFAULT, null, function (s, r) {
+        if (!self.alive) return;
+        let line;
+        try {
+            let res = s.read_line_finish_utf8(r);
+            line = res[0];
+        } catch (e) {
+            self._onExit();
+            return;
+        }
+        if (line === null) {
+            // EOF — child closed stdout (probably crashed). _onExit
+            // also fires from child_watch but is idempotent.
+            self._onExit();
+            return;
+        }
+        try {
+            let msg = JSON.parse(line);
+            if (typeof msg.id === "number" && self.pending[msg.id]) {
+                let cb = self.pending[msg.id];
+                delete self.pending[msg.id];
+                cb(msg.result === undefined ? null : msg.result,
+                   msg.error || null);
+            } else if (msg.event && self.onEvent) {
+                self.onEvent(msg);
+            }
+        } catch (e) { /* swallow malformed line — child may emit log noise on stderr-merged setups */ }
+        self._readNext();
+    });
+};
+
+RpcClient.prototype._onExit = function () {
+    if (!this.alive) return;
+    this.alive = false;
+    // Fail every pending callback so the UI doesn't sit on a spinner.
+    let pending = this.pending;
+    this.pending = {};
+    for (let id in pending) {
+        try { pending[id](null, "backend exited"); } catch (e) {}
+    }
+    if (this.stdoutReader) { try { this.stdoutReader.close(null); } catch (e) {} }
+    if (this.stdoutStream) { try { this.stdoutStream.close(null); } catch (e) {} }
+    if (this.stdinStream)  { try { this.stdinStream.close(null);  } catch (e) {} }
+    this.stdoutReader = null;
+    this.stdoutStream = null;
+    this.stdinStream = null;
+    this.pid = null;
+    this.failures++;
+    this._scheduleRespawn();
+};
+
+RpcClient.prototype._scheduleRespawn = function () {
+    if (this.stopped) return;
+    let idx = Math.min(this.failures, RPC_BACKOFF_MS.length - 1);
+    let delay = RPC_BACKOFF_MS[idx];
+    let self = this;
+    this.respawnTimerId = Mainloop.timeout_add(delay, function () {
+        self.respawnTimerId = 0;
+        self._start();
+        return false;
+    });
+};
+
+RpcClient.prototype.call = function (method, args, cb) {
+    if (this.stopped) { cb(null, "client stopped"); return; }
+    if (!this.alive)  { cb(null, "backend not ready"); return; }
+    let id = this.nextId++;
+    let self = this;
+    this.pending[id] = function (result, err) {
+        if (!err) self.failures = 0; // a successful round-trip resets the backoff
+        cb(result, err);
+    };
+    let payload = JSON.stringify({ id: id, method: method, args: args || {} }) + "\n";
+    try {
+        this.stdinStream.put_string(payload, null);
+        this.stdinStream.flush(null);
+    } catch (e) {
+        delete this.pending[id];
+        cb(null, "write failed: " + e);
+        this._onExit();
+    }
+};
+
+RpcClient.prototype.stop = function () {
+    this.stopped = true;
+    if (this.respawnTimerId) {
+        Mainloop.source_remove(this.respawnTimerId);
+        this.respawnTimerId = 0;
+    }
+    // Closing stdin gives the child a clean EOF — pipe-api's scanner
+    // loop returns and the process exits 0. child_watch_add reaps.
+    if (this.stdinStream) { try { this.stdinStream.close(null); } catch (e) {} }
+    this.stdinStream = null;
+};
 
 // ── main desklet ─────────────────────────────────────────────────────
 
@@ -205,6 +301,9 @@ MyDesklet.prototype = {
         });
         this.setContent(this._root);
         this._render();
+        // Start the long-lived backend before kicking off the poll
+        // loop — the very first poll tick is already running through it.
+        this._rpc = new RpcClient([this._cliBin(), "pipe-api"]);
         this._startPolling();
     },
 
@@ -212,6 +311,10 @@ MyDesklet.prototype = {
         if (this._pollId) {
             Mainloop.source_remove(this._pollId);
             this._pollId = null;
+        }
+        if (this._rpc) {
+            this._rpc.stop();
+            this._rpc = null;
         }
         this._stopAnims();
     },
@@ -315,20 +418,15 @@ MyDesklet.prototype = {
     },
 
     _poll: function () {
-        let argv = [this._cliBin(), "status", "--json"];
-        runAsync(argv, Lang.bind(this, function (out, err) {
+        this._rpc.call("status", {}, Lang.bind(this, function (result, err) {
             if (err) {
                 this._status = { state: "error", message: err };
                 this._render();
                 return;
             }
-            try {
-                this._status = JSON.parse(out || "{}");
-            } catch (e) {
-                this._status = { state: "error", message: "bad json: " + e };
-            }
-            // Pull spark series from the CLI cache too; the CLI is the
-            // sample-holder for cross-poll deltas.
+            this._status = result || {};
+            // Pull spark series from the backend cache; the backend is
+            // the sample-holder for cross-tick deltas.
             if (this._status.spark_in) this._sparkBytesIn = this._status.spark_in;
             if (this._status.spark_out) this._sparkBytesOut = this._status.spark_out;
             this._render();
@@ -845,12 +943,12 @@ MyDesklet.prototype = {
     _connect: function () {
         let target = this._targetProfile(this._status);
         if (!target) return; // nothing to connect to
-        runAsync([this._cliBin(), "connect", target],
+        this._rpc.call("connect", { target: target },
             Lang.bind(this, function () { this._poll(); }));
     },
 
     _disconnect: function () {
-        runAsync([this._cliBin(), "disconnect"],
+        this._rpc.call("disconnect", {},
             Lang.bind(this, function () { this._poll(); }));
     },
 
@@ -860,17 +958,13 @@ MyDesklet.prototype = {
         // Refetch profiles every time the picker opens so the list
         // reflects imports/removes that happened since startup. Cheap
         // — list is a single overlay read.
-        runAsync([this._cliBin(), "list", "--json"], Lang.bind(this, function (out, err) {
+        this._rpc.call("list", {}, Lang.bind(this, function (result, err) {
             if (err) {
                 this._status = { state: "error", message: err };
                 this._render();
                 return;
             }
-            try {
-                this._profiles = JSON.parse(out || "[]");
-            } catch (e) {
-                this._profiles = [];
-            }
+            this._profiles = result || [];
             this._picking = true;
             this._render();
         }));
